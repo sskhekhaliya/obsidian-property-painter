@@ -11,6 +11,7 @@ import type PropertyPainterPlugin from './main';
 import {
   DEFAULT_RULES,
   PropertyColorRule,
+  RuleOperator,
   RuleStyleMode,
   ThumbnailAspectRatio,
   ThumbnailClickAction,
@@ -311,7 +312,7 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
       const emptyNotice = rulesListContainer.createDiv({ cls: 'property-painter-empty-notice' });
       emptyNotice.setText('No rules configured. Click "+ Add Rule" or "Reset to Defaults".');
     } else {
-      this.plugin.settings.rules.forEach((rule, index) => {
+      this.plugin.settings.rules.forEach((rule: PropertyColorRule, index: number) => {
         const card = rulesListContainer.createDiv({ cls: 'property-painter-rule-card' });
 
         const cardLeft = card.createDiv({ cls: 'rule-card-left' });
