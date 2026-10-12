@@ -1,0 +1,11 @@
+{
+  "id": "obsidian-property-painter",
+  "name": "Property Painter",
+  "version": "1.0.0",
+  "minAppVersion": "1.5.0",
+  "description": "Show image thumbnails side-by-side with note properties, apply custom color rules to metadata properties (e.g. shelf: to-read, read, currently-reading), and paint file names in File Explorer.",
+  "author": "SSKhekhaliya",
+  "authorUrl": "https://www.sskhekhaliya.in/",
+  "fundingUrl": "https://buymeacoffee.com/sskhekhaliya",
+  "isDesktopOnly": false
+}
