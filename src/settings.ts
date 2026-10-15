@@ -4,6 +4,7 @@ import {
   Modal,
   PluginSettingTab,
   Setting,
+  TFolder,
   TextComponent,
   setIcon
 } from 'obsidian';
@@ -11,6 +12,7 @@ import type PropertyPainterPlugin from './main';
 import {
   DEFAULT_RULES,
   PropertyColorRule,
+  RuleFolderScope,
   RuleOperator,
   RuleStyleMode,
   ThumbnailAspectRatio,
@@ -19,6 +21,7 @@ import {
   ThumbnailPosition
 } from './types';
 import { getAdaptiveTextColor, getAdaptiveBackgroundColor, isDarkTheme } from './color-utils';
+import { FolderSuggest, TagSuggest, PropertyKeySuggest } from './suggesters';
 
 export class PropertyPainterSettingTab extends PluginSettingTab {
   plugin: PropertyPainterPlugin;
@@ -278,6 +281,9 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
             property: 'shelf',
             operator: 'equals',
             value: '',
+            folderScope: 'global',
+            folderPath: '',
+            exceptFolderPath: '',
             textColor: '#FCE7B2',
             backgroundColor: 'rgba(252, 231, 178, 0.15)',
             styleMode: 'badge',
@@ -327,7 +333,13 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
 
         const details = cardLeft.createDiv({ cls: 'rule-card-details' });
         const titleRow = details.createDiv({ cls: 'rule-title-row' });
-        titleRow.createSpan({ cls: 'rule-name', text: rule.name || `${rule.property}: ${rule.value}` });
+        let defaultName = `${rule.property}: ${rule.value}`;
+        if (rule.operator === 'empty') {
+          defaultName = `${rule.property} is empty`;
+        } else if (rule.operator === 'filled') {
+          defaultName = `${rule.property} is filled`;
+        }
+        titleRow.createSpan({ cls: 'rule-name', text: rule.name || defaultName });
 
         const effColor = getAdaptiveTextColor(rule.textColor, this.plugin.settings.autoThemeColors);
         const effBg = getAdaptiveBackgroundColor(rule.backgroundColor, rule.textColor, this.plugin.settings.autoThemeColors);
@@ -348,7 +360,15 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
             iconSpan.textContent = rule.prefixIcon.trim();
           }
         }
-        badge.createSpan({ text: rule.value || rule.property });
+        let pillText = rule.value;
+        if (rule.operator === 'empty') {
+          pillText = pillText || '(empty)';
+        } else if (rule.operator === 'filled') {
+          pillText = pillText || '(filled)';
+        } else {
+          pillText = pillText || rule.property || 'Preview';
+        }
+        badge.createSpan({ text: pillText });
         badge.style.setProperty('--pp-pill-color', effColor, 'important');
         badge.style.setProperty('--pp-rule-color', effColor, 'important');
         badge.style.setProperty('color', effColor, 'important');
@@ -374,8 +394,14 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
         const conditionRow = details.createDiv({ cls: 'rule-condition-row' });
         conditionRow.createSpan({ text: `When ` });
         conditionRow.createEl('code', { text: rule.property });
-        conditionRow.createSpan({ text: ` ${rule.operator} ` });
-        conditionRow.createEl('code', { text: `"${rule.value}"` });
+        if (rule.operator === 'empty') {
+          conditionRow.createSpan({ text: ' is empty' });
+        } else if (rule.operator === 'filled') {
+          conditionRow.createSpan({ text: ' is filled' });
+        } else {
+          conditionRow.createSpan({ text: ` ${rule.operator} ` });
+          conditionRow.createEl('code', { text: `"${rule.value}"` });
+        }
 
         const targetsRow = details.createDiv({ cls: 'rule-targets-row' });
         const modeBadge = targetsRow.createSpan({
@@ -390,6 +416,19 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
             text: `Prefix: ${rule.prefixIcon.trim()}`
           });
           setIcon(prefixBadge, 'sparkles');
+        }
+
+        if (rule.folderScope === 'folder' && rule.folderPath && rule.folderPath.trim()) {
+          const fBadge = targetsRow.createSpan({ cls: 'target-badge', text: `Folder: ${rule.folderPath.trim()}` });
+          setIcon(fBadge, 'folder');
+        } else {
+          const gBadge = targetsRow.createSpan({ cls: 'target-badge', text: 'Global' });
+          setIcon(gBadge, 'globe');
+        }
+
+        if (rule.exceptFolderPath && rule.exceptFolderPath.trim()) {
+          const exBadge = targetsRow.createSpan({ cls: 'target-badge', text: `Except: ${rule.exceptFolderPath.trim()}` });
+          setIcon(exBadge, 'folder-x');
         }
 
         if (rule.applyToProperties) {
@@ -674,6 +713,9 @@ export class RuleEditorModal extends Modal {
 
     this.rule = {
       ...rule,
+      folderScope: rule.folderScope || 'global',
+      folderPath: rule.folderPath ?? '',
+      exceptFolderPath: rule.exceptFolderPath ?? '',
       prefixIcon: rule.prefixIcon ?? '',
       styleMode: rule.styleMode || 'badge',
       propertyBold: rule.propertyBold ?? false,
@@ -754,7 +796,17 @@ export class RuleEditorModal extends Modal {
           iconSpan.textContent = this.rule.prefixIcon.trim();
         }
       }
-      previewPill.createSpan({ text: this.rule.value || this.rule.property || 'Preview' });
+
+      let pillDisplayText = this.rule.value;
+      if (this.rule.operator === 'empty') {
+        pillDisplayText = pillDisplayText || '(empty)';
+      } else if (this.rule.operator === 'filled') {
+        pillDisplayText = pillDisplayText || '(filled)';
+      } else {
+        pillDisplayText = pillDisplayText || this.rule.property || 'Preview';
+      }
+
+      previewPill.createSpan({ text: pillDisplayText });
       previewPill.style.setProperty('--pp-pill-color', effTextColor, 'important');
       previewPill.style.setProperty('--pp-rule-color', effTextColor, 'important');
       previewPill.style.setProperty('color', effTextColor, 'important');
@@ -778,7 +830,16 @@ export class RuleEditorModal extends Modal {
       }
 
       // Explorer Title
-      expPreviewTitle.setText(this.rule.value ? `${this.rule.value}-note.md` : 'example-note.md');
+      let sampleTitle = 'example-note.md';
+      if (this.rule.operator === 'empty') {
+        sampleTitle = `${this.rule.property || 'property'}-empty.md`;
+      } else if (this.rule.operator === 'filled') {
+        sampleTitle = `${this.rule.property || 'property'}-filled.md`;
+      } else if (this.rule.value) {
+        sampleTitle = `${this.rule.value}-note.md`;
+      }
+      expPreviewTitle.setText(sampleTitle);
+
       if (this.rule.applyToFileExplorer) {
         expPreviewTitle.style.color = effTextColor;
       } else {
@@ -830,15 +891,32 @@ export class RuleEditorModal extends Modal {
 
     new Setting(contentEl)
       .setName('Property Key')
-      .setDesc('Frontmatter key to match (e.g., shelf, status, priority)')
+      .setDesc('Frontmatter key to match (e.g., shelf, status, priority, tags)')
       .addText(text => {
         text.setPlaceholder('shelf');
         text.setValue(this.rule.property || '');
+        new PropertyKeySuggest(this.app, text.inputEl, async val => {
+          this.rule.property = val;
+          await this.applyDirectChange();
+        });
         text.onChange(async val => {
           this.rule.property = val;
           await this.applyDirectChange();
         });
       });
+
+    let targetValueSetting: Setting;
+    let caseSensitiveSetting: Setting;
+
+    const updateOperatorVisibility = () => {
+      const isValueless = this.rule.operator === 'empty' || this.rule.operator === 'filled';
+      if (targetValueSetting) {
+        targetValueSetting.settingEl.style.display = isValueless ? 'none' : '';
+      }
+      if (caseSensitiveSetting) {
+        caseSensitiveSetting.settingEl.style.display = isValueless ? 'none' : '';
+      }
+    };
 
     new Setting(contentEl)
       .setName('Operator')
@@ -849,26 +927,38 @@ export class RuleEditorModal extends Modal {
         dd.addOption('starts-with', 'Starts With');
         dd.addOption('ends-with', 'Ends With');
         dd.addOption('regex', 'Regular Expression');
+        dd.addOption('empty', 'Empty (Property is empty)');
+        dd.addOption('filled', 'Filled (Property has value)');
         dd.setValue(this.rule.operator || 'equals');
         dd.onChange(async val => {
           this.rule.operator = val as RuleOperator;
+          updateOperatorVisibility();
           await this.applyDirectChange();
         });
       });
 
-    new Setting(contentEl)
+    targetValueSetting = new Setting(contentEl)
       .setName('Target Value')
-      .setDesc('Value to match against (e.g., to-read, read, currently-reading)')
+      .setDesc('Value to match against (e.g., to-read, read, or tags from your vault)')
       .addText(text => {
         text.setPlaceholder('to-read');
         text.setValue(this.rule.value || '');
+        new TagSuggest(
+          this.app,
+          text.inputEl,
+          () => this.rule.property || '',
+          async val => {
+            this.rule.value = val;
+            await this.applyDirectChange();
+          }
+        );
         text.onChange(async val => {
           this.rule.value = val;
           await this.applyDirectChange();
         });
       });
 
-    new Setting(contentEl)
+    caseSensitiveSetting = new Setting(contentEl)
       .setName('Case Sensitive')
       .setDesc('Match value with exact case sensitivity')
       .addToggle(toggle => {
@@ -878,7 +968,69 @@ export class RuleEditorModal extends Modal {
         });
       });
 
-    // Section 2: Colors & Style
+    updateOperatorVisibility();
+
+    // Section 2: Folder Scope & Filter
+    contentEl.createEl('h4', { text: 'Folder Scope & Filter' });
+
+    let targetFolderSetting: Setting;
+
+    const updateFolderScopeVisibility = () => {
+      const isFolderSpecific = (this.rule.folderScope || 'global') === 'folder';
+      if (targetFolderSetting) {
+        targetFolderSetting.settingEl.style.display = isFolderSpecific ? '' : 'none';
+      }
+    };
+
+    new Setting(contentEl)
+      .setName('Apply to')
+      .setDesc('Choose whether this rule applies across all vault notes or only within a specific folder')
+      .addDropdown(dd => {
+        dd.addOption('global', 'Global (All folders)');
+        dd.addOption('folder', 'This folder (Specific folder)');
+        dd.setValue(this.rule.folderScope || 'global');
+        dd.onChange(async val => {
+          this.rule.folderScope = val as RuleFolderScope;
+          updateFolderScopeVisibility();
+          await this.applyDirectChange();
+        });
+      });
+
+    targetFolderSetting = new Setting(contentEl)
+      .setName('Target folder')
+      .setDesc('Only notes located inside this folder or its subfolders will be matched (e.g. Books or Work/Projects)')
+      .addText(text => {
+        text.setPlaceholder('e.g. Books or Work/Projects');
+        text.setValue(this.rule.folderPath || '');
+        new FolderSuggest(this.app, text.inputEl, false, async val => {
+          this.rule.folderPath = val;
+          await this.applyDirectChange();
+        });
+        text.onChange(async val => {
+          this.rule.folderPath = val;
+          await this.applyDirectChange();
+        });
+      });
+
+    new Setting(contentEl)
+      .setName('Except folder')
+      .setDesc('Exclude notes located inside this folder or its subfolders (supports comma-separated list, e.g. Archive, Templates)')
+      .addText(text => {
+        text.setPlaceholder('e.g. Archive, Templates');
+        text.setValue(this.rule.exceptFolderPath || '');
+        new FolderSuggest(this.app, text.inputEl, true, async val => {
+          this.rule.exceptFolderPath = val;
+          await this.applyDirectChange();
+        });
+        text.onChange(async val => {
+          this.rule.exceptFolderPath = val;
+          await this.applyDirectChange();
+        });
+      });
+
+    updateFolderScopeVisibility();
+
+    // Section 3: Colors & Style
     contentEl.createEl('h4', { text: 'Color & Appearance' });
 
     new Setting(contentEl)

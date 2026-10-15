@@ -161,6 +161,9 @@ export default class PropertyPainterPlugin extends Plugin {
         if (rule.explorerItalic === undefined) rule.explorerItalic = false;
         if (rule.explorerStrike === undefined) rule.explorerStrike = false;
         if (rule.explorerDotGlow === undefined) rule.explorerDotGlow = true;
+        if (rule.folderScope === undefined) rule.folderScope = 'global';
+        if (rule.folderPath === undefined) rule.folderPath = '';
+        if (rule.exceptFolderPath === undefined) rule.exceptFolderPath = '';
         if (rule.showExplorerDot === undefined) rule.showExplorerDot = true;
         if (rule.applyToFileExplorer === undefined) rule.applyToFileExplorer = true;
       });

@@ -63,7 +63,7 @@ export class ExplorerStyler {
     const cache = this.app.metadataCache.getFileCache(file);
     const frontmatter = cache?.frontmatter;
     const rule = settings.explorerEnabled
-      ? this.ruleManager.findMatchingExplorerRule(settings.rules, frontmatter)
+      ? this.ruleManager.findMatchingExplorerRule(settings.rules, frontmatter, file.path)
       : null;
 
     explorerLeaves.forEach(leaf => {
@@ -98,7 +98,7 @@ export class ExplorerStyler {
           const cache = this.app.metadataCache.getFileCache(abstractFile);
           const frontmatter = cache?.frontmatter;
           const rule = currentSettings.explorerEnabled
-            ? this.ruleManager.findMatchingExplorerRule(currentSettings.rules, frontmatter)
+            ? this.ruleManager.findMatchingExplorerRule(currentSettings.rules, frontmatter, abstractFile.path)
             : null;
 
           this.applyStyleToTitleEl(titleEl, rule, currentSettings);

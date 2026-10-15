@@ -13,6 +13,34 @@ export class RuleManager {
    * Tests if a given value matches a rule condition
    */
   public matchesRule(rule: PropertyColorRule, targetValue: any): boolean {
+    if (rule.operator === 'empty') {
+      if (targetValue === null || targetValue === undefined) return true;
+      if (Array.isArray(targetValue)) {
+        return targetValue.length === 0 || targetValue.every(item => item === null || item === undefined || String(item).trim() === '');
+      }
+      if (typeof targetValue === 'string') {
+        return targetValue.trim() === '';
+      }
+      return false;
+    }
+
+    if (rule.operator === 'filled') {
+      if (targetValue === null || targetValue === undefined) return false;
+      if (Array.isArray(targetValue)) {
+        return targetValue.length > 0 && targetValue.some(item => item !== null && item !== undefined && String(item).trim() !== '');
+      }
+      if (typeof targetValue === 'string') {
+        return targetValue.trim() !== '';
+      }
+      if (typeof targetValue === 'number' || typeof targetValue === 'boolean') {
+        return true;
+      }
+      if (typeof targetValue === 'object') {
+        return Object.keys(targetValue).length > 0;
+      }
+      return Boolean(targetValue);
+    }
+
     if (targetValue === null || targetValue === undefined) return false;
 
     if (Array.isArray(targetValue)) {
@@ -23,7 +51,7 @@ export class RuleManager {
     if (!valStr) return false;
 
     const source = rule.caseSensitive ? valStr : valStr.toLowerCase();
-    const target = rule.caseSensitive ? rule.value.trim() : rule.value.trim().toLowerCase();
+    const target = rule.caseSensitive ? (rule.value || '').trim() : (rule.value || '').trim().toLowerCase();
 
     switch (rule.operator) {
       case 'equals':
@@ -36,7 +64,7 @@ export class RuleManager {
         return source.endsWith(target);
       case 'regex':
         try {
-          const re = new RegExp(rule.value, rule.caseSensitive ? '' : 'i');
+          const re = new RegExp(rule.value || '', rule.caseSensitive ? '' : 'i');
           return re.test(valStr);
         } catch {
           return false;
@@ -47,12 +75,59 @@ export class RuleManager {
   }
 
   /**
+   * Tests if a file path satisfies a rule's folder scope (apply to folder & except folder)
+   */
+  public isFileMatchingFolderScope(rule: PropertyColorRule, filePath?: string): boolean {
+    if (!filePath) return true;
+
+    const normalizedPath = filePath.replace(/\\/g, '/').trim();
+    const lastSlashIndex = normalizedPath.lastIndexOf('/');
+    const fileDir = lastSlashIndex !== -1 ? normalizedPath.substring(0, lastSlashIndex) : '';
+    const lowerFileDir = fileDir.toLowerCase();
+
+    // 1. Check Except / Excluded folder(s)
+    if (rule.exceptFolderPath && rule.exceptFolderPath.trim()) {
+      const exceptList = rule.exceptFolderPath
+        .split(',')
+        .map(f => f.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''))
+        .filter(Boolean);
+
+      for (const exceptFolder of exceptList) {
+        const lowerExcept = exceptFolder.toLowerCase();
+        if (lowerFileDir === lowerExcept || lowerFileDir.startsWith(lowerExcept + '/')) {
+          return false;
+        }
+      }
+    }
+
+    // 2. Check Apply To folder scope
+    if (rule.folderScope === 'folder' && rule.folderPath && rule.folderPath.trim()) {
+      const targetFolder = rule.folderPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      if (targetFolder) {
+        const lowerTarget = targetFolder.toLowerCase();
+        if (lowerFileDir !== lowerTarget && !lowerFileDir.startsWith(lowerTarget + '/')) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
    * Finds the first matching rule for a property key & value in properties view
    */
-  public findMatchingPropertyRule(rules: PropertyColorRule[], key: string, value: any): PropertyColorRule | null {
+  public findMatchingPropertyRule(
+    rules: PropertyColorRule[],
+    key: string,
+    value: any,
+    filePath?: string
+  ): PropertyColorRule | null {
     const lowerKey = key.trim().toLowerCase();
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToProperties) continue;
+      if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
+
       if (rule.property.trim().toLowerCase() === lowerKey) {
         if (this.matchesRule(rule, value)) {
           return rule;
@@ -65,11 +140,16 @@ export class RuleManager {
   /**
    * Finds the first matching rule for file explorer based on a note's frontmatter
    */
-  public findMatchingExplorerRule(rules: PropertyColorRule[], frontmatter: Record<string, any> | undefined): PropertyColorRule | null {
+  public findMatchingExplorerRule(
+    rules: PropertyColorRule[],
+    frontmatter: Record<string, any> | undefined,
+    filePath?: string
+  ): PropertyColorRule | null {
     if (!frontmatter) return null;
 
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToFileExplorer) continue;
+      if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
 
       const ruleKeyLower = rule.property.trim().toLowerCase();
       const matchingKey = Object.keys(frontmatter).find(k => k.trim().toLowerCase() === ruleKeyLower);
@@ -108,6 +188,7 @@ export class RuleManager {
 
     const cache = this.app.metadataCache.getFileCache(view.file);
     const frontmatter = cache?.frontmatter;
+    const filePath = view.file.path;
 
     metadataContainers.forEach(container => {
       const propertyElements = container.querySelectorAll<HTMLElement>('.metadata-property');
@@ -170,7 +251,7 @@ export class RuleManager {
             const pillContent = pill.querySelector('.multi-select-pill-content');
             const pillText = (pillContent?.textContent || pill.textContent || '').trim();
 
-            const rule = this.findMatchingPropertyRule(settings.rules, key!, pillText);
+            const rule = this.findMatchingPropertyRule(settings.rules, key!, pillText, filePath);
             if (rule) {
               hasAnyMatch = true;
               matchedRule = rule;
@@ -197,7 +278,7 @@ export class RuleManager {
         }
 
         // Case B: General / Scalar / Text property value
-        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue);
+        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue, filePath);
         const targetElements = valueEl.querySelectorAll<HTMLElement>(
           '.metadata-input-longtext, input, textarea, [contenteditable], .metadata-property-input'
         );

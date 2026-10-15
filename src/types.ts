@@ -1,5 +1,6 @@
-export type RuleOperator = 'equals' | 'contains' | 'starts-with' | 'ends-with' | 'regex';
+export type RuleOperator = 'equals' | 'contains' | 'starts-with' | 'ends-with' | 'regex' | 'empty' | 'filled';
 export type RuleStyleMode = 'badge' | 'text-only';
+export type RuleFolderScope = 'global' | 'folder';
 
 export interface PropertyColorRule {
   id: string;
@@ -8,6 +9,9 @@ export interface PropertyColorRule {
   property: string;
   operator: RuleOperator;
   value: string;
+  folderScope?: RuleFolderScope;
+  folderPath?: string;
+  exceptFolderPath?: string;
   textColor: string;
   backgroundColor: string;
   styleMode: RuleStyleMode;
@@ -77,6 +81,9 @@ export const DEFAULT_RULES: PropertyColorRule[] = [
     property: 'shelf',
     operator: 'equals',
     value: 'to-read',
+    folderScope: 'global',
+    folderPath: '',
+    exceptFolderPath: '',
     textColor: '#FCE7B2',
     backgroundColor: 'rgba(252, 231, 178, 0.15)',
     styleMode: 'badge',
@@ -100,6 +107,9 @@ export const DEFAULT_RULES: PropertyColorRule[] = [
     property: 'shelf',
     operator: 'equals',
     value: 'read',
+    folderScope: 'global',
+    folderPath: '',
+    exceptFolderPath: '',
     textColor: '#CFF3D8',
     backgroundColor: 'rgba(207, 243, 216, 0.15)',
     styleMode: 'badge',
@@ -123,6 +133,9 @@ export const DEFAULT_RULES: PropertyColorRule[] = [
     property: 'shelf',
     operator: 'equals',
     value: 'currently-reading',
+    folderScope: 'global',
+    folderPath: '',
+    exceptFolderPath: '',
     textColor: '#D9E8FF',
     backgroundColor: 'rgba(217, 232, 255, 0.15)',
     styleMode: 'badge',

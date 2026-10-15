@@ -23,7 +23,7 @@ __export(main_exports, {
   default: () => PropertyPainterPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian6 = require("obsidian");
+var import_obsidian7 = require("obsidian");
 
 // src/types.ts
 var DEFAULT_RULES = [
@@ -34,6 +34,9 @@ var DEFAULT_RULES = [
     property: "shelf",
     operator: "equals",
     value: "to-read",
+    folderScope: "global",
+    folderPath: "",
+    exceptFolderPath: "",
     textColor: "#FCE7B2",
     backgroundColor: "rgba(252, 231, 178, 0.15)",
     styleMode: "badge",
@@ -57,6 +60,9 @@ var DEFAULT_RULES = [
     property: "shelf",
     operator: "equals",
     value: "read",
+    folderScope: "global",
+    folderPath: "",
+    exceptFolderPath: "",
     textColor: "#CFF3D8",
     backgroundColor: "rgba(207, 243, 216, 0.15)",
     styleMode: "badge",
@@ -80,6 +86,9 @@ var DEFAULT_RULES = [
     property: "shelf",
     operator: "equals",
     value: "currently-reading",
+    folderScope: "global",
+    folderPath: "",
+    exceptFolderPath: "",
     textColor: "#D9E8FF",
     backgroundColor: "rgba(217, 232, 255, 0.15)",
     styleMode: "badge",
@@ -503,6 +512,32 @@ var RuleManager = class {
    * Tests if a given value matches a rule condition
    */
   matchesRule(rule, targetValue) {
+    if (rule.operator === "empty") {
+      if (targetValue === null || targetValue === void 0) return true;
+      if (Array.isArray(targetValue)) {
+        return targetValue.length === 0 || targetValue.every((item) => item === null || item === void 0 || String(item).trim() === "");
+      }
+      if (typeof targetValue === "string") {
+        return targetValue.trim() === "";
+      }
+      return false;
+    }
+    if (rule.operator === "filled") {
+      if (targetValue === null || targetValue === void 0) return false;
+      if (Array.isArray(targetValue)) {
+        return targetValue.length > 0 && targetValue.some((item) => item !== null && item !== void 0 && String(item).trim() !== "");
+      }
+      if (typeof targetValue === "string") {
+        return targetValue.trim() !== "";
+      }
+      if (typeof targetValue === "number" || typeof targetValue === "boolean") {
+        return true;
+      }
+      if (typeof targetValue === "object") {
+        return Object.keys(targetValue).length > 0;
+      }
+      return Boolean(targetValue);
+    }
     if (targetValue === null || targetValue === void 0) return false;
     if (Array.isArray(targetValue)) {
       return targetValue.some((item) => this.matchesRule(rule, item));
@@ -510,7 +545,7 @@ var RuleManager = class {
     const valStr = String(targetValue).trim();
     if (!valStr) return false;
     const source = rule.caseSensitive ? valStr : valStr.toLowerCase();
-    const target = rule.caseSensitive ? rule.value.trim() : rule.value.trim().toLowerCase();
+    const target = rule.caseSensitive ? (rule.value || "").trim() : (rule.value || "").trim().toLowerCase();
     switch (rule.operator) {
       case "equals":
         return source === target;
@@ -522,7 +557,7 @@ var RuleManager = class {
         return source.endsWith(target);
       case "regex":
         try {
-          const re = new RegExp(rule.value, rule.caseSensitive ? "" : "i");
+          const re = new RegExp(rule.value || "", rule.caseSensitive ? "" : "i");
           return re.test(valStr);
         } catch {
           return false;
@@ -532,12 +567,42 @@ var RuleManager = class {
     }
   }
   /**
+   * Tests if a file path satisfies a rule's folder scope (apply to folder & except folder)
+   */
+  isFileMatchingFolderScope(rule, filePath) {
+    if (!filePath) return true;
+    const normalizedPath = filePath.replace(/\\/g, "/").trim();
+    const lastSlashIndex = normalizedPath.lastIndexOf("/");
+    const fileDir = lastSlashIndex !== -1 ? normalizedPath.substring(0, lastSlashIndex) : "";
+    const lowerFileDir = fileDir.toLowerCase();
+    if (rule.exceptFolderPath && rule.exceptFolderPath.trim()) {
+      const exceptList = rule.exceptFolderPath.split(",").map((f) => f.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "")).filter(Boolean);
+      for (const exceptFolder of exceptList) {
+        const lowerExcept = exceptFolder.toLowerCase();
+        if (lowerFileDir === lowerExcept || lowerFileDir.startsWith(lowerExcept + "/")) {
+          return false;
+        }
+      }
+    }
+    if (rule.folderScope === "folder" && rule.folderPath && rule.folderPath.trim()) {
+      const targetFolder = rule.folderPath.trim().replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+      if (targetFolder) {
+        const lowerTarget = targetFolder.toLowerCase();
+        if (lowerFileDir !== lowerTarget && !lowerFileDir.startsWith(lowerTarget + "/")) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+  /**
    * Finds the first matching rule for a property key & value in properties view
    */
-  findMatchingPropertyRule(rules, key, value) {
+  findMatchingPropertyRule(rules, key, value, filePath) {
     const lowerKey = key.trim().toLowerCase();
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToProperties) continue;
+      if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
       if (rule.property.trim().toLowerCase() === lowerKey) {
         if (this.matchesRule(rule, value)) {
           return rule;
@@ -549,10 +614,11 @@ var RuleManager = class {
   /**
    * Finds the first matching rule for file explorer based on a note's frontmatter
    */
-  findMatchingExplorerRule(rules, frontmatter) {
+  findMatchingExplorerRule(rules, frontmatter, filePath) {
     if (!frontmatter) return null;
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToFileExplorer) continue;
+      if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
       const ruleKeyLower = rule.property.trim().toLowerCase();
       const matchingKey = Object.keys(frontmatter).find((k) => k.trim().toLowerCase() === ruleKeyLower);
       if (matchingKey !== void 0) {
@@ -585,6 +651,7 @@ var RuleManager = class {
     if (metadataContainers.length === 0) return;
     const cache = this.app.metadataCache.getFileCache(view.file);
     const frontmatter = cache?.frontmatter;
+    const filePath = view.file.path;
     metadataContainers.forEach((container) => {
       const propertyElements = container.querySelectorAll(".metadata-property");
       propertyElements.forEach((propEl) => {
@@ -635,7 +702,7 @@ var RuleManager = class {
           pills.forEach((pill) => {
             const pillContent = pill.querySelector(".multi-select-pill-content");
             const pillText = (pillContent?.textContent || pill.textContent || "").trim();
-            const rule2 = this.findMatchingPropertyRule(settings.rules, key, pillText);
+            const rule2 = this.findMatchingPropertyRule(settings.rules, key, pillText, filePath);
             if (rule2) {
               hasAnyMatch = true;
               matchedRule = rule2;
@@ -659,7 +726,7 @@ var RuleManager = class {
           valueEl.style.backgroundColor = "";
           return;
         }
-        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue);
+        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue, filePath);
         const targetElements = valueEl.querySelectorAll(
           ".metadata-input-longtext, input, textarea, [contenteditable], .metadata-property-input"
         );
@@ -918,7 +985,7 @@ var ExplorerStyler = class {
     if (explorerLeaves.length === 0) return;
     const cache = this.app.metadataCache.getFileCache(file);
     const frontmatter = cache?.frontmatter;
-    const rule = settings.explorerEnabled ? this.ruleManager.findMatchingExplorerRule(settings.rules, frontmatter) : null;
+    const rule = settings.explorerEnabled ? this.ruleManager.findMatchingExplorerRule(settings.rules, frontmatter, file.path) : null;
     explorerLeaves.forEach((leaf) => {
       const titleEls = leaf.view.containerEl.querySelectorAll(
         `.nav-file-title[data-path="${CSS.escape(file.path)}"]`
@@ -945,7 +1012,7 @@ var ExplorerStyler = class {
         if (abstractFile instanceof import_obsidian3.TFile && abstractFile.extension === "md") {
           const cache = this.app.metadataCache.getFileCache(abstractFile);
           const frontmatter = cache?.frontmatter;
-          const rule = currentSettings.explorerEnabled ? this.ruleManager.findMatchingExplorerRule(currentSettings.rules, frontmatter) : null;
+          const rule = currentSettings.explorerEnabled ? this.ruleManager.findMatchingExplorerRule(currentSettings.rules, frontmatter, abstractFile.path) : null;
           this.applyStyleToTitleEl(titleEl, rule, currentSettings);
         }
       });
@@ -1124,8 +1191,201 @@ var ImagePreviewModal = class extends import_obsidian4.Modal {
 };
 
 // src/settings.ts
+var import_obsidian6 = require("obsidian");
+
+// src/suggesters.ts
 var import_obsidian5 = require("obsidian");
-var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab {
+var FolderSuggest = class extends import_obsidian5.AbstractInputSuggest {
+  constructor(app, textInputEl, multiSelect = false, onSelectCallback) {
+    super(app, textInputEl);
+    this.inputEl = textInputEl;
+    this.multiSelect = multiSelect;
+    this.onSelectCallback = onSelectCallback;
+  }
+  getAllFolders() {
+    const folders = [];
+    const files = this.app.vault.getAllLoadedFiles();
+    for (const file of files) {
+      if (file instanceof import_obsidian5.TFolder && file.path !== "/") {
+        folders.push(file.path);
+      }
+    }
+    return folders.sort((a, b) => a.localeCompare(b));
+  }
+  getSuggestions(query) {
+    let activeQuery = query;
+    if (this.multiSelect) {
+      const parts = query.split(",");
+      activeQuery = parts[parts.length - 1];
+    }
+    const cleanQuery = activeQuery.trim().toLowerCase();
+    const allFolders = this.getAllFolders();
+    if (!cleanQuery) {
+      return allFolders.slice(0, 50);
+    }
+    return allFolders.filter((f) => f.toLowerCase().includes(cleanQuery)).slice(0, 50);
+  }
+  renderSuggestion(folderPath, el) {
+    el.addClass("property-painter-suggest-item");
+    const iconSpan = el.createSpan({ cls: "property-painter-suggest-icon" });
+    (0, import_obsidian5.setIcon)(iconSpan, "folder");
+    el.createSpan({ cls: "property-painter-suggest-text", text: folderPath });
+  }
+  selectSuggestion(folderPath) {
+    if (this.multiSelect) {
+      const parts = this.inputEl.value.split(",");
+      parts[parts.length - 1] = parts.length > 1 ? ` ${folderPath}` : folderPath;
+      const result = parts.join(",").trim();
+      this.setValue(result);
+    } else {
+      this.setValue(folderPath);
+    }
+    this.inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    if (this.onSelectCallback) {
+      this.onSelectCallback(this.inputEl.value);
+    }
+    this.close();
+  }
+};
+var TagSuggest = class extends import_obsidian5.AbstractInputSuggest {
+  constructor(app, textInputEl, getPropertyKey, onSelectCallback) {
+    super(app, textInputEl);
+    this.inputEl = textInputEl;
+    this.getPropertyKey = getPropertyKey;
+    this.onSelectCallback = onSelectCallback;
+  }
+  getAllTags() {
+    const tagsSet = /* @__PURE__ */ new Set();
+    const cacheAny = this.app.metadataCache;
+    if (typeof cacheAny?.getTags === "function") {
+      const tagsObj = cacheAny.getTags();
+      if (tagsObj && typeof tagsObj === "object") {
+        Object.keys(tagsObj).forEach((t) => {
+          const clean = t.replace(/^#/, "");
+          if (clean) tagsSet.add(clean);
+        });
+      }
+    }
+    const files = this.app.vault.getMarkdownFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache) continue;
+      if (cache.tags) {
+        for (const t of cache.tags) {
+          const clean = t.tag.replace(/^#/, "");
+          if (clean) tagsSet.add(clean);
+        }
+      }
+      const fmTags = cache.frontmatter?.tags ?? cache.frontmatter?.tag;
+      if (fmTags) {
+        if (Array.isArray(fmTags)) {
+          for (const item of fmTags) {
+            if (item) {
+              const clean = String(item).trim().replace(/^#/, "");
+              if (clean) tagsSet.add(clean);
+            }
+          }
+        } else if (typeof fmTags === "string") {
+          fmTags.split(",").forEach((item) => {
+            const clean = item.trim().replace(/^#/, "");
+            if (clean) tagsSet.add(clean);
+          });
+        }
+      }
+    }
+    return Array.from(tagsSet).sort((a, b) => a.localeCompare(b));
+  }
+  getSuggestions(query) {
+    const propKey = (this.getPropertyKey ? this.getPropertyKey() : "").toLowerCase().trim();
+    const isTagProperty = propKey.includes("tag");
+    const parts = query.split(",");
+    const activeToken = parts[parts.length - 1].trim();
+    const cleanQuery = activeToken.replace(/^#/, "").toLowerCase();
+    if (!isTagProperty && !activeToken.startsWith("#") && !cleanQuery) {
+      return [];
+    }
+    const allTags = this.getAllTags();
+    if (!cleanQuery) {
+      return allTags.slice(0, 50);
+    }
+    return allTags.filter((t) => t.toLowerCase().includes(cleanQuery)).slice(0, 50);
+  }
+  renderSuggestion(tag, el) {
+    el.addClass("property-painter-suggest-item");
+    const iconSpan = el.createSpan({ cls: "property-painter-suggest-icon" });
+    (0, import_obsidian5.setIcon)(iconSpan, "hash");
+    el.createSpan({ cls: "property-painter-suggest-text", text: tag });
+  }
+  selectSuggestion(tag) {
+    const parts = this.inputEl.value.split(",");
+    const lastPart = parts[parts.length - 1].trim();
+    const hadHash = lastPart.startsWith("#");
+    const formatted = hadHash ? `#${tag}` : tag;
+    if (parts.length > 1) {
+      parts[parts.length - 1] = ` ${formatted}`;
+      this.setValue(parts.join(",").trim());
+    } else {
+      this.setValue(formatted);
+    }
+    this.inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    if (this.onSelectCallback) {
+      this.onSelectCallback(this.inputEl.value);
+    }
+    this.close();
+  }
+};
+var PropertyKeySuggest = class extends import_obsidian5.AbstractInputSuggest {
+  constructor(app, textInputEl, onSelectCallback) {
+    super(app, textInputEl);
+    this.inputEl = textInputEl;
+    this.onSelectCallback = onSelectCallback;
+  }
+  getAllPropertyKeys() {
+    const keysSet = /* @__PURE__ */ new Set(["tags", "shelf", "status", "category", "priority", "rating", "type"]);
+    const cacheAny = this.app.metadataCache;
+    if (typeof cacheAny?.getAllPropertyInfos === "function") {
+      const infos = cacheAny.getAllPropertyInfos();
+      if (infos && typeof infos === "object") {
+        Object.keys(infos).forEach((k) => keysSet.add(k));
+      }
+    }
+    const files = this.app.vault.getMarkdownFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (cache?.frontmatter) {
+        Object.keys(cache.frontmatter).forEach((k) => {
+          if (k !== "position") keysSet.add(k);
+        });
+      }
+    }
+    return Array.from(keysSet).sort((a, b) => a.localeCompare(b));
+  }
+  getSuggestions(query) {
+    const cleanQuery = query.trim().toLowerCase();
+    const allKeys = this.getAllPropertyKeys();
+    if (!cleanQuery) {
+      return allKeys.slice(0, 50);
+    }
+    return allKeys.filter((k) => k.toLowerCase().includes(cleanQuery)).slice(0, 50);
+  }
+  renderSuggestion(key, el) {
+    el.addClass("property-painter-suggest-item");
+    const iconSpan = el.createSpan({ cls: "property-painter-suggest-icon" });
+    (0, import_obsidian5.setIcon)(iconSpan, "tag");
+    el.createSpan({ cls: "property-painter-suggest-text", text: key });
+  }
+  selectSuggestion(key) {
+    this.setValue(key);
+    this.inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    if (this.onSelectCallback) {
+      this.onSelectCallback(key);
+    }
+    this.close();
+  }
+};
+
+// src/settings.ts
+var PropertyPainterSettingTab = class extends import_obsidian6.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.activeTab = "rules";
@@ -1149,7 +1409,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         attr: { type: "button" }
       });
       const iconSpan = tabBtn.createSpan({ cls: "property-painter-tab-icon" });
-      (0, import_obsidian5.setIcon)(iconSpan, tab.icon);
+      (0, import_obsidian6.setIcon)(iconSpan, tab.icon);
       tabBtn.createSpan({ text: tab.label });
       tabBtn.addEventListener("click", () => {
         this.activeTab = tab.id;
@@ -1178,14 +1438,14 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: "setting-item-description",
       text: "Renders an image thumbnail neatly beside the native note properties when an image link is present."
     });
-    new import_obsidian5.Setting(containerEl).setName("Enable cover thumbnail").setDesc("Display image thumbnail side-by-side with note properties").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable cover thumbnail").setDesc("Display image thumbnail side-by-side with note properties").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.thumbnailEnabled).onChange(async (val) => {
         this.plugin.settings.thumbnailEnabled = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Thumbnail position").setDesc("Place the thumbnail to the left or right of note properties").addDropdown((dd) => {
+    new import_obsidian6.Setting(containerEl).setName("Thumbnail position").setDesc("Place the thumbnail to the left or right of note properties").addDropdown((dd) => {
       dd.addOption("left", "Left of properties (Default)");
       dd.addOption("right", "Right of properties");
       dd.setValue(this.plugin.settings.thumbnailPosition);
@@ -1195,7 +1455,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Maintain original image ratio (Link dimensions)").setDesc("When enabled, the thumbnail preserves the image\u2019s original aspect ratio smoothly as width/height increase").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Maintain original image ratio (Link dimensions)").setDesc("When enabled, the thumbnail preserves the image\u2019s original aspect ratio smoothly as width/height increase").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.thumbnailMaintainAspectRatio).onChange(async (val) => {
         this.plugin.settings.thumbnailMaintainAspectRatio = val;
         await this.plugin.saveSettings();
@@ -1203,7 +1463,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.display();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Cover property keys").setDesc("Comma-separated list of frontmatter property names to check for images").addText((text) => {
+    new import_obsidian6.Setting(containerEl).setName("Cover property keys").setDesc("Comma-separated list of frontmatter property names to check for images").addText((text) => {
       text.setPlaceholder("cover, image, thumbnail, poster, banner");
       text.setValue(this.plugin.settings.thumbnailPropertyKeys);
       text.onChange(async (val) => {
@@ -1212,21 +1472,21 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Auto-detect image links").setDesc("If enabled, automatically checks any frontmatter property for image URLs/attachments if target keys are not found").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Auto-detect image links").setDesc("If enabled, automatically checks any frontmatter property for image URLs/attachments if target keys are not found").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.thumbnailAutoDetect).onChange(async (val) => {
         this.plugin.settings.thumbnailAutoDetect = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Thumbnail width").setDesc("Width of the thumbnail in pixels").addSlider((slider) => {
+    new import_obsidian6.Setting(containerEl).setName("Thumbnail width").setDesc("Width of the thumbnail in pixels").addSlider((slider) => {
       slider.setLimits(60, 300, 5).setValue(this.plugin.settings.thumbnailWidth).setDynamicTooltip().onChange(async (val) => {
         this.plugin.settings.thumbnailWidth = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Thumbnail max height").setDesc("Maximum height of the thumbnail in pixels").addSlider((slider) => {
+    new import_obsidian6.Setting(containerEl).setName("Thumbnail max height").setDesc("Maximum height of the thumbnail in pixels").addSlider((slider) => {
       slider.setLimits(80, 450, 10).setValue(this.plugin.settings.thumbnailMaxHeight).setDynamicTooltip().onChange(async (val) => {
         this.plugin.settings.thumbnailMaxHeight = val;
         await this.plugin.saveSettings();
@@ -1234,7 +1494,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       });
     });
     if (!this.plugin.settings.thumbnailMaintainAspectRatio) {
-      new import_obsidian5.Setting(containerEl).setName("Fixed aspect ratio preset").setDesc("Applied when dimensions are unlinked from the original ratio").addDropdown((dd) => {
+      new import_obsidian6.Setting(containerEl).setName("Fixed aspect ratio preset").setDesc("Applied when dimensions are unlinked from the original ratio").addDropdown((dd) => {
         dd.addOption("cover", "Book Cover (2:3)");
         dd.addOption("square", "Square (1:1)");
         dd.addOption("wide", "Widescreen (16:9)");
@@ -1247,7 +1507,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         });
       });
     }
-    new import_obsidian5.Setting(containerEl).setName("Object fit").setDesc("How the image fits within the thumbnail frame").addDropdown((dd) => {
+    new import_obsidian6.Setting(containerEl).setName("Object fit").setDesc("How the image fits within the thumbnail frame").addDropdown((dd) => {
       dd.addOption("cover", "Cover (Fill & Crop)");
       dd.addOption("contain", "Contain (Show Full Image)");
       dd.setValue(this.plugin.settings.thumbnailObjectFit);
@@ -1257,14 +1517,14 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Corner roundness").setDesc("Border radius in pixels").addSlider((slider) => {
+    new import_obsidian6.Setting(containerEl).setName("Corner roundness").setDesc("Border radius in pixels").addSlider((slider) => {
       slider.setLimits(0, 24, 1).setValue(this.plugin.settings.thumbnailBorderRadius).setDynamicTooltip().onChange(async (val) => {
         this.plugin.settings.thumbnailBorderRadius = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Click action").setDesc("Action when clicking the cover thumbnail").addDropdown((dd) => {
+    new import_obsidian6.Setting(containerEl).setName("Click action").setDesc("Action when clicking the cover thumbnail").addDropdown((dd) => {
       dd.addOption("modal", "Open Fullscreen Preview Modal");
       dd.addOption("open-file", "Open Local File (if in vault)");
       dd.addOption("none", "None");
@@ -1284,7 +1544,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: "setting-item-description",
       text: "Define custom color rules for metadata property values (e.g., shelf: to-read, read, currently-reading). Rules can apply to properties and File Explorer items."
     });
-    new import_obsidian5.Setting(containerEl).setName("Override global settings with rule preferences").setDesc("When ON: Rules customize their own badge vs text style and File Explorer formatting. When OFF: Global defaults apply across all matching properties and notes.").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Override global settings with rule preferences").setDesc("When ON: Rules customize their own badge vs text style and File Explorer formatting. When OFF: Global defaults apply across all matching properties and notes.").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.overrideGlobalSettings ?? true).onChange(async (val) => {
         this.plugin.settings.overrideGlobalSettings = val;
         this.plugin.settings.overrideGlobalExplorerSettings = val;
@@ -1292,7 +1552,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Active Rules").setDesc(`Total rules configured: ${this.plugin.settings.rules.length}`).addButton((btn) => {
+    new import_obsidian6.Setting(containerEl).setName("Active Rules").setDesc(`Total rules configured: ${this.plugin.settings.rules.length}`).addButton((btn) => {
       btn.setButtonText("+ Add Rule");
       btn.setCta();
       btn.onClick(() => {
@@ -1303,6 +1563,9 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
           property: "shelf",
           operator: "equals",
           value: "",
+          folderScope: "global",
+          folderPath: "",
+          exceptFolderPath: "",
           textColor: "#FCE7B2",
           backgroundColor: "rgba(252, 231, 178, 0.15)",
           styleMode: "badge",
@@ -1346,7 +1609,13 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         });
         const details = cardLeft.createDiv({ cls: "rule-card-details" });
         const titleRow = details.createDiv({ cls: "rule-title-row" });
-        titleRow.createSpan({ cls: "rule-name", text: rule.name || `${rule.property}: ${rule.value}` });
+        let defaultName = `${rule.property}: ${rule.value}`;
+        if (rule.operator === "empty") {
+          defaultName = `${rule.property} is empty`;
+        } else if (rule.operator === "filled") {
+          defaultName = `${rule.property} is filled`;
+        }
+        titleRow.createSpan({ cls: "rule-name", text: rule.name || defaultName });
         const effColor = getAdaptiveTextColor(rule.textColor, this.plugin.settings.autoThemeColors);
         const effBg = getAdaptiveBackgroundColor(rule.backgroundColor, rule.textColor, this.plugin.settings.autoThemeColors);
         const badge = titleRow.createSpan({ cls: "rule-preview-pill" });
@@ -1357,15 +1626,23 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
           if (iconName.toLowerCase().startsWith("lucide-")) {
             iconName = iconName.slice(7);
           }
-          (0, import_obsidian5.setIcon)(iconSpan, iconName.toLowerCase());
+          (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
           if (!iconSpan.querySelector("svg")) {
-            (0, import_obsidian5.setIcon)(iconSpan, iconName);
+            (0, import_obsidian6.setIcon)(iconSpan, iconName);
           }
           if (!iconSpan.querySelector("svg")) {
             iconSpan.textContent = rule.prefixIcon.trim();
           }
         }
-        badge.createSpan({ text: rule.value || rule.property });
+        let pillText = rule.value;
+        if (rule.operator === "empty") {
+          pillText = pillText || "(empty)";
+        } else if (rule.operator === "filled") {
+          pillText = pillText || "(filled)";
+        } else {
+          pillText = pillText || rule.property || "Preview";
+        }
+        badge.createSpan({ text: pillText });
         badge.style.setProperty("--pp-pill-color", effColor, "important");
         badge.style.setProperty("--pp-rule-color", effColor, "important");
         badge.style.setProperty("color", effColor, "important");
@@ -1389,20 +1666,37 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         const conditionRow = details.createDiv({ cls: "rule-condition-row" });
         conditionRow.createSpan({ text: `When ` });
         conditionRow.createEl("code", { text: rule.property });
-        conditionRow.createSpan({ text: ` ${rule.operator} ` });
-        conditionRow.createEl("code", { text: `"${rule.value}"` });
+        if (rule.operator === "empty") {
+          conditionRow.createSpan({ text: " is empty" });
+        } else if (rule.operator === "filled") {
+          conditionRow.createSpan({ text: " is filled" });
+        } else {
+          conditionRow.createSpan({ text: ` ${rule.operator} ` });
+          conditionRow.createEl("code", { text: `"${rule.value}"` });
+        }
         const targetsRow = details.createDiv({ cls: "rule-targets-row" });
         const modeBadge = targetsRow.createSpan({
           cls: "target-badge",
           text: rule.styleMode === "text-only" ? "Text Only" : "Badge"
         });
-        (0, import_obsidian5.setIcon)(modeBadge, rule.styleMode === "text-only" ? "type" : "tag");
+        (0, import_obsidian6.setIcon)(modeBadge, rule.styleMode === "text-only" ? "type" : "tag");
         if (rule.prefixIcon && rule.prefixIcon.trim()) {
           const prefixBadge = targetsRow.createSpan({
             cls: "target-badge",
             text: `Prefix: ${rule.prefixIcon.trim()}`
           });
-          (0, import_obsidian5.setIcon)(prefixBadge, "sparkles");
+          (0, import_obsidian6.setIcon)(prefixBadge, "sparkles");
+        }
+        if (rule.folderScope === "folder" && rule.folderPath && rule.folderPath.trim()) {
+          const fBadge = targetsRow.createSpan({ cls: "target-badge", text: `Folder: ${rule.folderPath.trim()}` });
+          (0, import_obsidian6.setIcon)(fBadge, "folder");
+        } else {
+          const gBadge = targetsRow.createSpan({ cls: "target-badge", text: "Global" });
+          (0, import_obsidian6.setIcon)(gBadge, "globe");
+        }
+        if (rule.exceptFolderPath && rule.exceptFolderPath.trim()) {
+          const exBadge = targetsRow.createSpan({ cls: "target-badge", text: `Except: ${rule.exceptFolderPath.trim()}` });
+          (0, import_obsidian6.setIcon)(exBadge, "folder-x");
         }
         if (rule.applyToProperties) {
           const pStyles = [];
@@ -1411,7 +1705,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
           if (rule.propertyStrike) pStyles.push("Strike");
           const pDesc = pStyles.length > 0 ? `Properties (${pStyles.join(", ")})` : "Properties";
           const tProp = targetsRow.createSpan({ cls: "target-badge", text: pDesc });
-          (0, import_obsidian5.setIcon)(tProp, "file-text");
+          (0, import_obsidian6.setIcon)(tProp, "file-text");
         }
         if (rule.applyToFileExplorer) {
           const styles = [];
@@ -1421,14 +1715,14 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
           if (rule.showExplorerDot) styles.push("Dot" + (rule.explorerDotGlow ? " Glow" : ""));
           const desc = styles.length > 0 ? `Explorer (${styles.join(", ")})` : "Explorer";
           const tExp = targetsRow.createSpan({ cls: "target-badge", text: desc });
-          (0, import_obsidian5.setIcon)(tExp, "folder-tree");
+          (0, import_obsidian6.setIcon)(tExp, "folder-tree");
         }
         const cardRight = card.createDiv({ cls: "rule-card-actions" });
         const editBtn = cardRight.createEl("button", {
           cls: "rule-action-btn rule-edit-btn",
           attr: { type: "button", "aria-label": "Edit rule" }
         });
-        (0, import_obsidian5.setIcon)(editBtn, "pencil");
+        (0, import_obsidian6.setIcon)(editBtn, "pencil");
         editBtn.addEventListener("click", () => {
           new RuleEditorModal(
             this.app,
@@ -1445,7 +1739,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
           cls: "rule-action-btn rule-delete-btn",
           attr: { type: "button", "aria-label": "Delete rule" }
         });
-        (0, import_obsidian5.setIcon)(deleteBtn, "trash-2");
+        (0, import_obsidian6.setIcon)(deleteBtn, "trash-2");
         deleteBtn.addEventListener("click", async () => {
           this.plugin.settings.rules.splice(index, 1);
           await this.plugin.saveSettings();
@@ -1465,7 +1759,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       text: "Default styling and formatting applied to matching properties and note titles when rule-specific override is turned OFF."
     });
     containerEl.createEl("h4", { text: "Property Global Defaults" });
-    new import_obsidian5.Setting(containerEl).setName("Default property style mode").setDesc("Style mode for property values (Badge pill container vs clean Text Only). Applied when rule override is OFF.").addDropdown((dd) => {
+    new import_obsidian6.Setting(containerEl).setName("Default property style mode").setDesc("Style mode for property values (Badge pill container vs clean Text Only). Applied when rule override is OFF.").addDropdown((dd) => {
       dd.addOption("badge", "Badge (Rounded pill container)");
       dd.addOption("text-only", "Text Only (No background pill)");
       dd.setValue(this.plugin.settings.globalStyleMode || "badge");
@@ -1475,13 +1769,13 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
         this.plugin.refreshAllViews();
       });
     });
-    const propFormatSetting = new import_obsidian5.Setting(containerEl).setName("Global property text formatting").setDesc("Default bold, italic, or strikethrough applied to note property values when rule override is OFF");
+    const propFormatSetting = new import_obsidian6.Setting(containerEl).setName("Global property text formatting").setDesc("Default bold, italic, or strikethrough applied to note property values when rule override is OFF");
     const propFormatGroup = propFormatSetting.controlEl.createDiv({ cls: "rule-editor-format-group" });
     const gpBoldBtn = propFormatGroup.createEl("button", {
       cls: `rule-editor-format-btn ${this.plugin.settings.globalPropertyBold ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Bold" }
     });
-    (0, import_obsidian5.setIcon)(gpBoldBtn, "bold");
+    (0, import_obsidian6.setIcon)(gpBoldBtn, "bold");
     gpBoldBtn.addEventListener("click", async () => {
       this.plugin.settings.globalPropertyBold = !this.plugin.settings.globalPropertyBold;
       gpBoldBtn.toggleClass("is-active", this.plugin.settings.globalPropertyBold);
@@ -1492,7 +1786,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: `rule-editor-format-btn ${this.plugin.settings.globalPropertyItalic ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Italic" }
     });
-    (0, import_obsidian5.setIcon)(gpItalicBtn, "italic");
+    (0, import_obsidian6.setIcon)(gpItalicBtn, "italic");
     gpItalicBtn.addEventListener("click", async () => {
       this.plugin.settings.globalPropertyItalic = !this.plugin.settings.globalPropertyItalic;
       gpItalicBtn.toggleClass("is-active", this.plugin.settings.globalPropertyItalic);
@@ -1503,7 +1797,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: `rule-editor-format-btn ${this.plugin.settings.globalPropertyStrike ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Strikethrough" }
     });
-    (0, import_obsidian5.setIcon)(gpStrikeBtn, "strikethrough");
+    (0, import_obsidian6.setIcon)(gpStrikeBtn, "strikethrough");
     gpStrikeBtn.addEventListener("click", async () => {
       this.plugin.settings.globalPropertyStrike = !this.plugin.settings.globalPropertyStrike;
       gpStrikeBtn.toggleClass("is-active", this.plugin.settings.globalPropertyStrike);
@@ -1511,13 +1805,13 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       this.plugin.refreshAllViews();
     });
     containerEl.createEl("h4", { text: "File Explorer Global Defaults" });
-    const expFormatSetting = new import_obsidian5.Setting(containerEl).setName("Global File Explorer formatting").setDesc("Default bold, italic, or strikethrough applied to filenames in File Explorer when rule override is OFF");
+    const expFormatSetting = new import_obsidian6.Setting(containerEl).setName("Global File Explorer formatting").setDesc("Default bold, italic, or strikethrough applied to filenames in File Explorer when rule override is OFF");
     const expFormatGroup = expFormatSetting.controlEl.createDiv({ cls: "rule-editor-format-group" });
     const gBoldBtn = expFormatGroup.createEl("button", {
       cls: `rule-editor-format-btn ${this.plugin.settings.globalExplorerBold ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Bold" }
     });
-    (0, import_obsidian5.setIcon)(gBoldBtn, "bold");
+    (0, import_obsidian6.setIcon)(gBoldBtn, "bold");
     gBoldBtn.addEventListener("click", async () => {
       this.plugin.settings.globalExplorerBold = !this.plugin.settings.globalExplorerBold;
       gBoldBtn.toggleClass("is-active", this.plugin.settings.globalExplorerBold);
@@ -1528,7 +1822,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: `rule-editor-format-btn ${this.plugin.settings.globalExplorerItalic ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Italic" }
     });
-    (0, import_obsidian5.setIcon)(gItalicBtn, "italic");
+    (0, import_obsidian6.setIcon)(gItalicBtn, "italic");
     gItalicBtn.addEventListener("click", async () => {
       this.plugin.settings.globalExplorerItalic = !this.plugin.settings.globalExplorerItalic;
       gItalicBtn.toggleClass("is-active", this.plugin.settings.globalExplorerItalic);
@@ -1539,28 +1833,28 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: `rule-editor-format-btn ${this.plugin.settings.globalExplorerStrike ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Strikethrough" }
     });
-    (0, import_obsidian5.setIcon)(gStrikeBtn, "strikethrough");
+    (0, import_obsidian6.setIcon)(gStrikeBtn, "strikethrough");
     gStrikeBtn.addEventListener("click", async () => {
       this.plugin.settings.globalExplorerStrike = !this.plugin.settings.globalExplorerStrike;
       gStrikeBtn.toggleClass("is-active", this.plugin.settings.globalExplorerStrike);
       await this.plugin.saveSettings();
       this.plugin.refreshAllViews();
     });
-    new import_obsidian5.Setting(containerEl).setName("Show indicator dot").setDesc("Display colored dot next to note titles when rule override is OFF").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Show indicator dot").setDesc("Display colored dot next to note titles when rule override is OFF").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.globalShowExplorerDot).onChange(async (val) => {
         this.plugin.settings.globalShowExplorerDot = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Indicator dot glow effect").setDesc("Add luminous glow effect to indicator dots when rule override is OFF").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Indicator dot glow effect").setDesc("Add luminous glow effect to indicator dots when rule override is OFF").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.globalExplorerDotGlow).onChange(async (val) => {
         this.plugin.settings.globalExplorerDotGlow = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Indicator dot size").setDesc("Size in pixels of the File Explorer indicator dot").addSlider((slider) => {
+    new import_obsidian6.Setting(containerEl).setName("Indicator dot size").setDesc("Size in pixels of the File Explorer indicator dot").addSlider((slider) => {
       slider.setLimits(4, 16, 1).setValue(this.plugin.settings.explorerDotSize).setDynamicTooltip().onChange(async (val) => {
         this.plugin.settings.explorerDotSize = val;
         await this.plugin.saveSettings();
@@ -1577,14 +1871,14 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       cls: "setting-item-description",
       text: "Master switches, automatic theme adaptations, and maintenance tools."
     });
-    new import_obsidian5.Setting(containerEl).setName("Enable File Explorer styling").setDesc("Master switch to color and style matching note titles in File Explorer").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Enable File Explorer styling").setDesc("Master switch to color and style matching note titles in File Explorer").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.explorerEnabled).onChange(async (val) => {
         this.plugin.settings.explorerEnabled = val;
         await this.plugin.saveSettings();
         this.plugin.refreshAllViews();
       });
     });
-    new import_obsidian5.Setting(containerEl).setName("Auto theme contrast").setDesc("Automatically optimize colors and contrast between Obsidian Light and Dark themes").addToggle((toggle) => {
+    new import_obsidian6.Setting(containerEl).setName("Auto theme contrast").setDesc("Automatically optimize colors and contrast between Obsidian Light and Dark themes").addToggle((toggle) => {
       toggle.setValue(this.plugin.settings.autoThemeColors).onChange(async (val) => {
         this.plugin.settings.autoThemeColors = val;
         await this.plugin.saveSettings();
@@ -1593,7 +1887,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
       });
     });
     containerEl.createEl("h3", { text: "Maintenance & Tools" });
-    new import_obsidian5.Setting(containerEl).setName("Repaint all").setDesc("Forces a full refresh of all open note properties and File Explorer items").addButton((btn) => {
+    new import_obsidian6.Setting(containerEl).setName("Repaint all").setDesc("Forces a full refresh of all open note properties and File Explorer items").addButton((btn) => {
       btn.setButtonText("Repaint Now");
       btn.setCta();
       btn.onClick(() => {
@@ -1602,7 +1896,7 @@ var PropertyPainterSettingTab = class extends import_obsidian5.PluginSettingTab 
     });
   }
 };
-var RuleEditorModal = class extends import_obsidian5.Modal {
+var RuleEditorModal = class extends import_obsidian6.Modal {
   constructor(app, plugin, rule, isNew, onSaveCallback, ruleIndex = -1) {
     super(app);
     this.plugin = plugin;
@@ -1610,6 +1904,9 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
     this.onSaveCallback = onSaveCallback;
     this.rule = {
       ...rule,
+      folderScope: rule.folderScope || "global",
+      folderPath: rule.folderPath ?? "",
+      exceptFolderPath: rule.exceptFolderPath ?? "",
       prefixIcon: rule.prefixIcon ?? "",
       styleMode: rule.styleMode || "badge",
       propertyBold: rule.propertyBold ?? false,
@@ -1669,15 +1966,23 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
         if (iconName.toLowerCase().startsWith("lucide-")) {
           iconName = iconName.slice(7);
         }
-        (0, import_obsidian5.setIcon)(iconSpan, iconName.toLowerCase());
+        (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
         if (!iconSpan.querySelector("svg")) {
-          (0, import_obsidian5.setIcon)(iconSpan, iconName);
+          (0, import_obsidian6.setIcon)(iconSpan, iconName);
         }
         if (!iconSpan.querySelector("svg")) {
           iconSpan.textContent = this.rule.prefixIcon.trim();
         }
       }
-      previewPill.createSpan({ text: this.rule.value || this.rule.property || "Preview" });
+      let pillDisplayText = this.rule.value;
+      if (this.rule.operator === "empty") {
+        pillDisplayText = pillDisplayText || "(empty)";
+      } else if (this.rule.operator === "filled") {
+        pillDisplayText = pillDisplayText || "(filled)";
+      } else {
+        pillDisplayText = pillDisplayText || this.rule.property || "Preview";
+      }
+      previewPill.createSpan({ text: pillDisplayText });
       previewPill.style.setProperty("--pp-pill-color", effTextColor, "important");
       previewPill.style.setProperty("--pp-rule-color", effTextColor, "important");
       previewPill.style.setProperty("color", effTextColor, "important");
@@ -1698,7 +2003,15 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
         previewPill.style.setProperty("border", "1px solid transparent", "important");
         previewPill.style.setProperty("background-color", "transparent", "important");
       }
-      expPreviewTitle.setText(this.rule.value ? `${this.rule.value}-note.md` : "example-note.md");
+      let sampleTitle = "example-note.md";
+      if (this.rule.operator === "empty") {
+        sampleTitle = `${this.rule.property || "property"}-empty.md`;
+      } else if (this.rule.operator === "filled") {
+        sampleTitle = `${this.rule.property || "property"}-filled.md`;
+      } else if (this.rule.value) {
+        sampleTitle = `${this.rule.value}-note.md`;
+      }
+      expPreviewTitle.setText(sampleTitle);
       if (this.rule.applyToFileExplorer) {
         expPreviewTitle.style.color = effTextColor;
       } else {
@@ -1730,49 +2043,120 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
     };
     this.updatePreview();
     contentEl.createEl("h4", { text: "Matching Rule" });
-    new import_obsidian5.Setting(contentEl).setName("Rule Name").setDesc("Descriptive label for this rule").addText((text) => {
+    new import_obsidian6.Setting(contentEl).setName("Rule Name").setDesc("Descriptive label for this rule").addText((text) => {
       text.setValue(this.rule.name || "");
       text.onChange(async (val) => {
         this.rule.name = val;
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Property Key").setDesc("Frontmatter key to match (e.g., shelf, status, priority)").addText((text) => {
+    new import_obsidian6.Setting(contentEl).setName("Property Key").setDesc("Frontmatter key to match (e.g., shelf, status, priority, tags)").addText((text) => {
       text.setPlaceholder("shelf");
       text.setValue(this.rule.property || "");
+      new PropertyKeySuggest(this.app, text.inputEl, async (val) => {
+        this.rule.property = val;
+        await this.applyDirectChange();
+      });
       text.onChange(async (val) => {
         this.rule.property = val;
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Operator").setDesc("How the property value should be compared").addDropdown((dd) => {
+    let targetValueSetting;
+    let caseSensitiveSetting;
+    const updateOperatorVisibility = () => {
+      const isValueless = this.rule.operator === "empty" || this.rule.operator === "filled";
+      if (targetValueSetting) {
+        targetValueSetting.settingEl.style.display = isValueless ? "none" : "";
+      }
+      if (caseSensitiveSetting) {
+        caseSensitiveSetting.settingEl.style.display = isValueless ? "none" : "";
+      }
+    };
+    new import_obsidian6.Setting(contentEl).setName("Operator").setDesc("How the property value should be compared").addDropdown((dd) => {
       dd.addOption("equals", "Equals");
       dd.addOption("contains", "Contains");
       dd.addOption("starts-with", "Starts With");
       dd.addOption("ends-with", "Ends With");
       dd.addOption("regex", "Regular Expression");
+      dd.addOption("empty", "Empty (Property is empty)");
+      dd.addOption("filled", "Filled (Property has value)");
       dd.setValue(this.rule.operator || "equals");
       dd.onChange(async (val) => {
         this.rule.operator = val;
+        updateOperatorVisibility();
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Target Value").setDesc("Value to match against (e.g., to-read, read, currently-reading)").addText((text) => {
+    targetValueSetting = new import_obsidian6.Setting(contentEl).setName("Target Value").setDesc("Value to match against (e.g., to-read, read, or tags from your vault)").addText((text) => {
       text.setPlaceholder("to-read");
       text.setValue(this.rule.value || "");
+      new TagSuggest(
+        this.app,
+        text.inputEl,
+        () => this.rule.property || "",
+        async (val) => {
+          this.rule.value = val;
+          await this.applyDirectChange();
+        }
+      );
       text.onChange(async (val) => {
         this.rule.value = val;
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Case Sensitive").setDesc("Match value with exact case sensitivity").addToggle((toggle) => {
+    caseSensitiveSetting = new import_obsidian6.Setting(contentEl).setName("Case Sensitive").setDesc("Match value with exact case sensitivity").addToggle((toggle) => {
       toggle.setValue(this.rule.caseSensitive).onChange(async (val) => {
         this.rule.caseSensitive = val;
         await this.applyDirectChange();
       });
     });
+    updateOperatorVisibility();
+    contentEl.createEl("h4", { text: "Folder Scope & Filter" });
+    let targetFolderSetting;
+    const updateFolderScopeVisibility = () => {
+      const isFolderSpecific = (this.rule.folderScope || "global") === "folder";
+      if (targetFolderSetting) {
+        targetFolderSetting.settingEl.style.display = isFolderSpecific ? "" : "none";
+      }
+    };
+    new import_obsidian6.Setting(contentEl).setName("Apply to").setDesc("Choose whether this rule applies across all vault notes or only within a specific folder").addDropdown((dd) => {
+      dd.addOption("global", "Global (All folders)");
+      dd.addOption("folder", "This folder (Specific folder)");
+      dd.setValue(this.rule.folderScope || "global");
+      dd.onChange(async (val) => {
+        this.rule.folderScope = val;
+        updateFolderScopeVisibility();
+        await this.applyDirectChange();
+      });
+    });
+    targetFolderSetting = new import_obsidian6.Setting(contentEl).setName("Target folder").setDesc("Only notes located inside this folder or its subfolders will be matched (e.g. Books or Work/Projects)").addText((text) => {
+      text.setPlaceholder("e.g. Books or Work/Projects");
+      text.setValue(this.rule.folderPath || "");
+      new FolderSuggest(this.app, text.inputEl, false, async (val) => {
+        this.rule.folderPath = val;
+        await this.applyDirectChange();
+      });
+      text.onChange(async (val) => {
+        this.rule.folderPath = val;
+        await this.applyDirectChange();
+      });
+    });
+    new import_obsidian6.Setting(contentEl).setName("Except folder").setDesc("Exclude notes located inside this folder or its subfolders (supports comma-separated list, e.g. Archive, Templates)").addText((text) => {
+      text.setPlaceholder("e.g. Archive, Templates");
+      text.setValue(this.rule.exceptFolderPath || "");
+      new FolderSuggest(this.app, text.inputEl, true, async (val) => {
+        this.rule.exceptFolderPath = val;
+        await this.applyDirectChange();
+      });
+      text.onChange(async (val) => {
+        this.rule.exceptFolderPath = val;
+        await this.applyDirectChange();
+      });
+    });
+    updateFolderScopeVisibility();
     contentEl.createEl("h4", { text: "Color & Appearance" });
-    new import_obsidian5.Setting(contentEl).setName("Style Mode").setDesc("Choose between a rounded pill badge (border + background tint) or text color only").addDropdown((dd) => {
+    new import_obsidian6.Setting(contentEl).setName("Style Mode").setDesc("Choose between a rounded pill badge (border + background tint) or text color only").addDropdown((dd) => {
       dd.addOption("badge", "Badge Style (Pill with border & tint)");
       dd.addOption("text-only", "Text Color Only (No badge or border)");
       dd.setValue(this.rule.styleMode || "badge");
@@ -1791,7 +2175,7 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
     lucideLink.className = "property-painter-external-link";
     prefixDesc.appendChild(lucideLink);
     prefixDesc.appendChild(document.createTextNode("."));
-    new import_obsidian5.Setting(contentEl).setName("Prefix Icon or Symbol").setDesc(prefixDesc).addText((text) => {
+    new import_obsidian6.Setting(contentEl).setName("Prefix Icon or Symbol").setDesc(prefixDesc).addText((text) => {
       text.setPlaceholder("e.g. bookmark, check, star, \u{1F4D6}");
       text.setValue(this.rule.prefixIcon || "");
       text.onChange(async (val) => {
@@ -1802,7 +2186,7 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
     let colorTextComp = null;
     let colorPickerComp = null;
     let bgComp = null;
-    new import_obsidian5.Setting(contentEl).setName("Text Color").setDesc("Hex or CSS color for text and indicator dot (e.g., #FCE7B2, #CFF3D8, #D9E8FF)").addColorPicker((cp) => {
+    new import_obsidian6.Setting(contentEl).setName("Text Color").setDesc("Hex or CSS color for text and indicator dot (e.g., #FCE7B2, #CFF3D8, #D9E8FF)").addColorPicker((cp) => {
       colorPickerComp = cp;
       const validHex = this.rule.textColor.startsWith("#") && this.rule.textColor.length === 7 ? this.rule.textColor : "#FCE7B2";
       cp.setValue(validHex);
@@ -1822,7 +2206,7 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Background Color").setDesc("Background tint when Badge style is enabled (e.g. rgba(252, 231, 178, 0.15))").addText((text) => {
+    new import_obsidian6.Setting(contentEl).setName("Background Color").setDesc("Background tint when Badge style is enabled (e.g. rgba(252, 231, 178, 0.15))").addText((text) => {
       bgComp = text;
       text.setPlaceholder("rgba(252, 231, 178, 0.15)");
       text.setValue(this.rule.backgroundColor || "");
@@ -1832,19 +2216,19 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
       });
     });
     contentEl.createEl("h4", { text: "Note Properties Scope" });
-    new import_obsidian5.Setting(contentEl).setName("Apply to Note Properties").setDesc("Apply color inside note property views in both Live Preview and Reading View").addToggle((toggle) => {
+    new import_obsidian6.Setting(contentEl).setName("Apply to Note Properties").setDesc("Apply color inside note property views in both Live Preview and Reading View").addToggle((toggle) => {
       toggle.setValue(this.rule.applyToProperties).onChange(async (val) => {
         this.rule.applyToProperties = val;
         await this.applyDirectChange();
       });
     });
-    const propFormatSetting = new import_obsidian5.Setting(contentEl).setName("Property text formatting").setDesc("Format property value with bold, italic, or strikethrough in note properties");
+    const propFormatSetting = new import_obsidian6.Setting(contentEl).setName("Property text formatting").setDesc("Format property value with bold, italic, or strikethrough in note properties");
     const propFormatGroup = propFormatSetting.controlEl.createDiv({ cls: "rule-editor-format-group" });
     const pBoldBtn = propFormatGroup.createEl("button", {
       cls: `rule-editor-format-btn ${this.rule.propertyBold ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Bold" }
     });
-    (0, import_obsidian5.setIcon)(pBoldBtn, "bold");
+    (0, import_obsidian6.setIcon)(pBoldBtn, "bold");
     pBoldBtn.addEventListener("click", async () => {
       this.rule.propertyBold = !this.rule.propertyBold;
       pBoldBtn.toggleClass("is-active", this.rule.propertyBold);
@@ -1854,7 +2238,7 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
       cls: `rule-editor-format-btn ${this.rule.propertyItalic ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Italic" }
     });
-    (0, import_obsidian5.setIcon)(pItalicBtn, "italic");
+    (0, import_obsidian6.setIcon)(pItalicBtn, "italic");
     pItalicBtn.addEventListener("click", async () => {
       this.rule.propertyItalic = !this.rule.propertyItalic;
       pItalicBtn.toggleClass("is-active", this.rule.propertyItalic);
@@ -1864,26 +2248,26 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
       cls: `rule-editor-format-btn ${this.rule.propertyStrike ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Strikethrough" }
     });
-    (0, import_obsidian5.setIcon)(pStrikeBtn, "strikethrough");
+    (0, import_obsidian6.setIcon)(pStrikeBtn, "strikethrough");
     pStrikeBtn.addEventListener("click", async () => {
       this.rule.propertyStrike = !this.rule.propertyStrike;
       pStrikeBtn.toggleClass("is-active", this.rule.propertyStrike);
       await this.applyDirectChange();
     });
     contentEl.createEl("h4", { text: "File Explorer Styling" });
-    new import_obsidian5.Setting(contentEl).setName("Apply Color to File Explorer").setDesc("Color note filenames in the File Explorer tree").addToggle((toggle) => {
+    new import_obsidian6.Setting(contentEl).setName("Apply Color to File Explorer").setDesc("Color note filenames in the File Explorer tree").addToggle((toggle) => {
       toggle.setValue(this.rule.applyToFileExplorer).onChange(async (val) => {
         this.rule.applyToFileExplorer = val;
         await this.applyDirectChange();
       });
     });
-    const formatSetting = new import_obsidian5.Setting(contentEl).setName("File Explorer text formatting").setDesc("Format filename with bold, italic, or strikethrough in File Explorer");
+    const formatSetting = new import_obsidian6.Setting(contentEl).setName("File Explorer text formatting").setDesc("Format filename with bold, italic, or strikethrough in File Explorer");
     const formatGroup = formatSetting.controlEl.createDiv({ cls: "rule-editor-format-group" });
     const boldBtn = formatGroup.createEl("button", {
       cls: `rule-editor-format-btn ${this.rule.explorerBold ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Bold" }
     });
-    (0, import_obsidian5.setIcon)(boldBtn, "bold");
+    (0, import_obsidian6.setIcon)(boldBtn, "bold");
     boldBtn.addEventListener("click", async () => {
       this.rule.explorerBold = !this.rule.explorerBold;
       boldBtn.toggleClass("is-active", this.rule.explorerBold);
@@ -1893,7 +2277,7 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
       cls: `rule-editor-format-btn ${this.rule.explorerItalic ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Italic" }
     });
-    (0, import_obsidian5.setIcon)(italicBtn, "italic");
+    (0, import_obsidian6.setIcon)(italicBtn, "italic");
     italicBtn.addEventListener("click", async () => {
       this.rule.explorerItalic = !this.rule.explorerItalic;
       italicBtn.toggleClass("is-active", this.rule.explorerItalic);
@@ -1903,19 +2287,19 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
       cls: `rule-editor-format-btn ${this.rule.explorerStrike ? "is-active" : ""}`,
       attr: { type: "button", "aria-label": "Strikethrough" }
     });
-    (0, import_obsidian5.setIcon)(strikeBtn, "strikethrough");
+    (0, import_obsidian6.setIcon)(strikeBtn, "strikethrough");
     strikeBtn.addEventListener("click", async () => {
       this.rule.explorerStrike = !this.rule.explorerStrike;
       strikeBtn.toggleClass("is-active", this.rule.explorerStrike);
       await this.applyDirectChange();
     });
-    new import_obsidian5.Setting(contentEl).setName("Show Indicator Dot").setDesc("Display a colored dot next to the note title in File Explorer").addToggle((toggle) => {
+    new import_obsidian6.Setting(contentEl).setName("Show Indicator Dot").setDesc("Display a colored dot next to the note title in File Explorer").addToggle((toggle) => {
       toggle.setValue(this.rule.showExplorerDot).onChange(async (val) => {
         this.rule.showExplorerDot = val;
         await this.applyDirectChange();
       });
     });
-    new import_obsidian5.Setting(contentEl).setName("Glow effect on indicator dot").setDesc("Add a luminous glow effect to the indicator dot matching the rule color").addToggle((toggle) => {
+    new import_obsidian6.Setting(contentEl).setName("Glow effect on indicator dot").setDesc("Add a luminous glow effect to the indicator dot matching the rule color").addToggle((toggle) => {
       toggle.setValue(this.rule.explorerDotGlow).onChange(async (val) => {
         this.rule.explorerDotGlow = val;
         await this.applyDirectChange();
@@ -1930,12 +2314,12 @@ var RuleEditorModal = class extends import_obsidian5.Modal {
 };
 
 // src/main.ts
-var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
+var PropertyPainterPlugin = class extends import_obsidian7.Plugin {
   constructor(app, manifest) {
     super(app, manifest);
     this.settings = DEFAULT_SETTINGS;
     this.viewObserver = null;
-    this.debouncedRefreshActive = (0, import_obsidian6.debounce)(() => {
+    this.debouncedRefreshActive = (0, import_obsidian7.debounce)(() => {
       this.refreshActiveMarkdownView();
     }, 40, true);
   }
@@ -2026,7 +2410,7 @@ var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
     this.explorerStyler.clearAllExplorerStyles();
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     leaves.forEach((leaf) => {
-      if (leaf.view instanceof import_obsidian6.MarkdownView) {
+      if (leaf.view instanceof import_obsidian7.MarkdownView) {
         const metaContainers = leaf.view.contentEl.querySelectorAll(".metadata-container");
         metaContainers.forEach((container) => {
           container.classList.remove(
@@ -2055,6 +2439,9 @@ var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
         if (rule.explorerItalic === void 0) rule.explorerItalic = false;
         if (rule.explorerStrike === void 0) rule.explorerStrike = false;
         if (rule.explorerDotGlow === void 0) rule.explorerDotGlow = true;
+        if (rule.folderScope === void 0) rule.folderScope = "global";
+        if (rule.folderPath === void 0) rule.folderPath = "";
+        if (rule.exceptFolderPath === void 0) rule.exceptFolderPath = "";
         if (rule.showExplorerDot === void 0) rule.showExplorerDot = true;
         if (rule.applyToFileExplorer === void 0) rule.applyToFileExplorer = true;
       });
@@ -2105,7 +2492,7 @@ var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
       this.viewObserver.disconnect();
       this.viewObserver = null;
     }
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
     if (!activeView) return;
     this.patchMetadataEditor(activeView);
     this.viewObserver = new MutationObserver((mutations) => {
@@ -2137,7 +2524,7 @@ var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
    * Refreshes the currently active Markdown view
    */
   refreshActiveMarkdownView() {
-    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian6.MarkdownView);
+    const activeView = this.app.workspace.getActiveViewOfType(import_obsidian7.MarkdownView);
     if (activeView) {
       this.updateMarkdownView(activeView);
     }
@@ -2148,7 +2535,7 @@ var PropertyPainterPlugin = class extends import_obsidian6.Plugin {
   refreshAllViews() {
     const leaves = this.app.workspace.getLeavesOfType("markdown");
     leaves.forEach((leaf) => {
-      if (leaf.view instanceof import_obsidian6.MarkdownView) {
+      if (leaf.view instanceof import_obsidian7.MarkdownView) {
         this.updateMarkdownView(leaf.view);
       }
     });
