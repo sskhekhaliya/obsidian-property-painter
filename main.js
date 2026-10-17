@@ -544,27 +544,53 @@ var RuleManager = class {
     }
     const valStr = String(targetValue).trim();
     if (!valStr) return false;
-    const source = rule.caseSensitive ? valStr : valStr.toLowerCase();
-    const target = rule.caseSensitive ? (rule.value || "").trim() : (rule.value || "").trim().toLowerCase();
-    switch (rule.operator) {
-      case "equals":
-        return source === target;
-      case "contains":
-        return source.includes(target);
-      case "starts-with":
-        return source.startsWith(target);
-      case "ends-with":
-        return source.endsWith(target);
-      case "regex":
-        try {
-          const re = new RegExp(rule.value || "", rule.caseSensitive ? "" : "i");
-          return re.test(valStr);
-        } catch {
-          return false;
-        }
-      default:
-        return source === target;
+    if (rule.operator === "regex") {
+      try {
+        const re = new RegExp(rule.value || "", rule.caseSensitive ? "" : "i");
+        return re.test(valStr);
+      } catch {
+        return false;
+      }
     }
+    const rawTargets = (rule.value || "").split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+    if (rawTargets.length === 0) return false;
+    const targets = rule.caseSensitive ? rawTargets : rawTargets.map((v) => v.toLowerCase());
+    const source = rule.caseSensitive ? valStr : valStr.toLowerCase();
+    const matchesSingle = (src, tgt) => {
+      switch (rule.operator) {
+        case "equals": {
+          if (src === tgt) return true;
+          const cleanSrc = src.replace(/^#/, "");
+          const cleanTgt = tgt.replace(/^#/, "");
+          return cleanSrc === cleanTgt;
+        }
+        case "contains": {
+          if (src.includes(tgt)) return true;
+          const cleanTgt = tgt.replace(/^#/, "");
+          return cleanTgt ? src.includes(cleanTgt) : false;
+        }
+        case "starts-with": {
+          if (src.startsWith(tgt)) return true;
+          const cleanTgt = tgt.replace(/^#/, "");
+          return cleanTgt ? src.startsWith(cleanTgt) : false;
+        }
+        case "ends-with": {
+          if (src.endsWith(tgt)) return true;
+          const cleanTgt = tgt.replace(/^#/, "");
+          return cleanTgt ? src.endsWith(cleanTgt) : false;
+        }
+        default:
+          return src === tgt;
+      }
+    };
+    if (targets.some((tgt) => matchesSingle(source, tgt))) {
+      return true;
+    }
+    if (source.includes(",")) {
+      const sourceParts = source.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
+      return sourceParts.some((part) => targets.some((tgt) => matchesSingle(part, tgt)));
+    }
+    return false;
   }
   /**
    * Tests if a file path satisfies a rule's folder scope (apply to folder & except folder)
@@ -603,7 +629,8 @@ var RuleManager = class {
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToProperties) continue;
       if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
-      if (rule.property.trim().toLowerCase() === lowerKey) {
+      const ruleKeys = (rule.property || "").split(",").map((k) => k.trim().toLowerCase()).filter((k) => k.length > 0);
+      if (ruleKeys.includes(lowerKey)) {
         if (this.matchesRule(rule, value)) {
           return rule;
         }
@@ -619,8 +646,8 @@ var RuleManager = class {
     for (const rule of rules) {
       if (!rule.enabled || !rule.applyToFileExplorer) continue;
       if (!this.isFileMatchingFolderScope(rule, filePath)) continue;
-      const ruleKeyLower = rule.property.trim().toLowerCase();
-      const matchingKey = Object.keys(frontmatter).find((k) => k.trim().toLowerCase() === ruleKeyLower);
+      const ruleKeys = (rule.property || "").split(",").map((k) => k.trim().toLowerCase()).filter((k) => k.length > 0);
+      const matchingKey = Object.keys(frontmatter).find((k) => ruleKeys.includes(k.trim().toLowerCase()));
       if (matchingKey !== void 0) {
         const val = frontmatter[matchingKey];
         if (this.matchesRule(rule, val)) {
@@ -665,6 +692,32 @@ var RuleManager = class {
         if (!key) return;
         const valueEl = propEl.querySelector(".metadata-property-value");
         if (!valueEl) return;
+        if (!valueEl.hasAttribute("data-pp-click-bound")) {
+          valueEl.setAttribute("data-pp-click-bound", "true");
+          const focusInput = (e) => {
+            const target = e.target;
+            if (target.closest(".multi-select-pill") || target.closest(".property-painter-prefix-icon")) return;
+            const input = valueEl.querySelector(
+              ".metadata-input-longtext, input, textarea, [contenteditable]"
+            );
+            if (input && target !== input && !input.contains(target)) {
+              e.preventDefault();
+              input.focus();
+              if (input.isContentEditable) {
+                const range = document.createRange();
+                range.selectNodeContents(input);
+                range.collapse(false);
+                const sel = window.getSelection();
+                sel?.removeAllRanges();
+                sel?.addRange(range);
+              } else if (input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) {
+                input.setSelectionRange(input.value.length, input.value.length);
+              }
+            }
+          };
+          valueEl.addEventListener("pointerdown", focusInput);
+          valueEl.addEventListener("click", focusInput);
+        }
         let fmValue = frontmatter ? frontmatter[key] : void 0;
         if (fmValue === void 0 && frontmatter) {
           const matchKey = Object.keys(frontmatter).find((k) => k.toLowerCase() === key.toLowerCase());
@@ -683,23 +736,34 @@ var RuleManager = class {
             if (txt) liveVal = txt;
           }
         } else {
-          const txt = (valueEl.textContent || "").trim();
+          const clone = valueEl.cloneNode(true);
+          clone.querySelectorAll(".property-painter-prefix-icon").forEach((n) => n.remove());
+          const txt = (clone.textContent || "").trim();
           if (txt) liveVal = txt;
         }
         const effectiveValue = liveVal !== void 0 ? liveVal : fmValue;
+        const isEditing = propEl.contains(document.activeElement) || valueEl.contains(document.activeElement);
+        const oldWrapper = valueEl.querySelector(":scope > .property-painter-value-pill");
+        if (oldWrapper) {
+          while (oldWrapper.firstChild) {
+            const child = oldWrapper.firstChild;
+            if (child instanceof HTMLElement && child.classList.contains("property-painter-prefix-icon")) {
+              child.remove();
+            } else {
+              valueEl.insertBefore(child, oldWrapper);
+            }
+          }
+          oldWrapper.remove();
+        }
         const pills = valueEl.querySelectorAll(".multi-select-pill");
         if (pills && pills.length > 0) {
-          const oldWrapper = valueEl.querySelector(":scope > .property-painter-value-pill");
-          if (oldWrapper) {
-            while (oldWrapper.firstChild) {
-              valueEl.insertBefore(oldWrapper.firstChild, oldWrapper);
-            }
-            oldWrapper.remove();
-          }
           this.renderPrefixIcon(valueEl, "");
           let hasAnyMatch = false;
           let matchedRule = null;
           pills.forEach((pill) => {
+            if (isEditing && pill.contains(document.activeElement)) {
+              return;
+            }
             const pillContent = pill.querySelector(".multi-select-pill-content");
             const pillText = (pillContent?.textContent || pill.textContent || "").trim();
             const rule2 = this.findMatchingPropertyRule(settings.rules, key, pillText, filePath);
@@ -726,10 +790,12 @@ var RuleManager = class {
           valueEl.style.backgroundColor = "";
           return;
         }
-        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue, filePath);
-        const targetElements = valueEl.querySelectorAll(
+        const targetEl = valueEl.querySelector(
           ".metadata-input-longtext, input, textarea, [contenteditable], .metadata-property-input"
         );
+        const activeEl = document.activeElement;
+        const isActivelyTyping = targetEl && (targetEl === activeEl || targetEl.contains(activeEl));
+        const rule = this.findMatchingPropertyRule(settings.rules, key, effectiveValue, filePath);
         valueEl.style.backgroundColor = "";
         valueEl.classList.remove("property-painter-styled-value");
         const keyEl = propEl.querySelector(".metadata-property-key");
@@ -757,35 +823,33 @@ var RuleManager = class {
           valueEl.style.setProperty("font-weight", isBold ? "bold" : "normal", "important");
           valueEl.style.setProperty("font-style", isItalic ? "italic" : "normal", "important");
           valueEl.style.setProperty("text-decoration", isStrike ? "line-through" : "none", "important");
-          const looseIcon = valueEl.querySelector(":scope > .property-painter-prefix-icon");
-          if (looseIcon) looseIcon.remove();
-          let pillWrapper = valueEl.querySelector(":scope > .property-painter-value-pill");
-          if (!pillWrapper) {
-            pillWrapper = document.createElement("div");
-            pillWrapper.className = "property-painter-pill property-painter-value-pill";
-            if (targetElements.length > 0) {
-              const mainTarget = targetElements[0];
-              valueEl.insertBefore(pillWrapper, mainTarget);
-              pillWrapper.appendChild(mainTarget);
-            } else {
-              const nodesToMove = Array.from(valueEl.childNodes).filter((node) => {
-                return !(node instanceof HTMLElement && node.classList.contains("property-painter-prefix-icon"));
+          let displayTarget = targetEl;
+          if (!displayTarget) {
+            let readingPill = valueEl.querySelector(":scope > .property-painter-pill");
+            if (!readingPill) {
+              readingPill = document.createElement("span");
+              readingPill.className = "property-painter-pill";
+              const nodesToMove = [];
+              valueEl.childNodes.forEach((child) => {
+                if (!(child instanceof HTMLElement && child.classList.contains("property-painter-prefix-icon"))) {
+                  nodesToMove.push(child);
+                }
               });
-              valueEl.appendChild(pillWrapper);
-              nodesToMove.forEach((node) => pillWrapper.appendChild(node));
+              nodesToMove.forEach((node) => readingPill.appendChild(node));
+              valueEl.appendChild(readingPill);
+            }
+            displayTarget = readingPill;
+          }
+          if (displayTarget) {
+            this.applyPillStyles(displayTarget, rule, settings, effectiveStyleMode);
+          }
+          if (!isActivelyTyping) {
+            if (rule.prefixIcon && rule.prefixIcon.trim()) {
+              this.renderPrefixIcon(valueEl, rule.prefixIcon, displayTarget);
+            } else {
+              this.renderPrefixIcon(valueEl, "");
             }
           }
-          this.applyPillStyles(pillWrapper, rule, settings, effectiveStyleMode);
-          this.renderPrefixIcon(pillWrapper, rule.prefixIcon);
-          targetElements.forEach((targetEl) => {
-            targetEl.classList.remove("property-painter-pill", "property-painter-text-only");
-            targetEl.style.removeProperty("--pp-pill-border");
-            targetEl.style.removeProperty("--pp-pill-bg");
-            targetEl.style.removeProperty("border");
-            targetEl.style.removeProperty("border-color");
-            targetEl.style.removeProperty("background-color");
-            targetEl.style.removeProperty("box-shadow");
-          });
         } else {
           propEl.removeAttribute("data-property-painter-match");
           propEl.style.removeProperty("--pp-rule-color");
@@ -799,24 +863,17 @@ var RuleManager = class {
           valueEl.style.removeProperty("font-weight");
           valueEl.style.removeProperty("font-style");
           valueEl.style.removeProperty("text-decoration");
-          const pillWrapper = valueEl.querySelector(":scope > .property-painter-value-pill");
-          if (pillWrapper) {
-            this.clearPillStyles(pillWrapper);
-            while (pillWrapper.firstChild) {
-              const child = pillWrapper.firstChild;
-              if (child instanceof HTMLElement && child.classList.contains("property-painter-prefix-icon")) {
-                child.remove();
-              } else {
-                valueEl.insertBefore(child, pillWrapper);
-              }
+          const readingPill = valueEl.querySelector(":scope > .property-painter-pill");
+          if (readingPill && readingPill !== targetEl) {
+            while (readingPill.firstChild) {
+              valueEl.insertBefore(readingPill.firstChild, readingPill);
             }
-            pillWrapper.remove();
+            readingPill.remove();
           }
-          const looseIcon = valueEl.querySelector(":scope > .property-painter-prefix-icon");
-          if (looseIcon) looseIcon.remove();
-          targetElements.forEach((targetEl) => {
+          if (targetEl) {
             this.clearPillStyles(targetEl);
-          });
+          }
+          this.renderPrefixIcon(valueEl, "");
           this.clearPillStyles(valueEl);
         }
       });
@@ -825,7 +882,7 @@ var RuleManager = class {
   /**
    * Renders or removes a prefix icon/symbol inside a container element
    */
-  renderPrefixIcon(container, prefix) {
+  renderPrefixIcon(container, prefix, beforeEl) {
     const desiredPrefix = prefix ? prefix.trim() : "";
     const existingIcon = container.querySelector(":scope > .property-painter-prefix-icon");
     if (desiredPrefix) {
@@ -849,6 +906,8 @@ var RuleManager = class {
         const pillContent = container.querySelector(".multi-select-pill-content");
         if (pillContent) {
           container.insertBefore(iconSpan, pillContent);
+        } else if (beforeEl && beforeEl.parentElement === container) {
+          container.insertBefore(iconSpan, beforeEl);
         } else {
           container.prepend(iconSpan);
         }
@@ -875,14 +934,12 @@ var RuleManager = class {
     el.style.setProperty("--metadata-input-text-color", effectiveTextColor, "important");
     el.style.setProperty("--metadata-value-text-color", effectiveTextColor, "important");
     el.style.setProperty("color", effectiveTextColor, "important");
-    el.style.setProperty("-webkit-text-fill-color", effectiveTextColor, "important");
     el.style.setProperty("font-weight", isBold ? "bold" : "normal", "important");
     el.style.setProperty("font-style", isItalic ? "italic" : "normal", "important");
     el.style.setProperty("text-decoration", isStrike ? "line-through" : "none", "important");
     const nestedPillContent = el.querySelector(".multi-select-pill-content");
     if (nestedPillContent) {
       nestedPillContent.style.setProperty("color", effectiveTextColor, "important");
-      nestedPillContent.style.setProperty("-webkit-text-fill-color", effectiveTextColor, "important");
       nestedPillContent.style.setProperty("font-weight", isBold ? "bold" : "normal", "important");
       nestedPillContent.style.setProperty("font-style", isItalic ? "italic" : "normal", "important");
       nestedPillContent.style.setProperty("text-decoration", isStrike ? "line-through" : "none", "important");
@@ -921,6 +978,7 @@ var RuleManager = class {
     el.style.removeProperty("color");
     el.style.removeProperty("-webkit-text-fill-color");
     el.style.removeProperty("background-color");
+    el.style.removeProperty("border");
     el.style.removeProperty("border-color");
     el.style.removeProperty("box-shadow");
     el.style.removeProperty("font-weight");
@@ -1295,35 +1353,69 @@ var TagSuggest = class extends import_obsidian5.AbstractInputSuggest {
     }
     return Array.from(tagsSet).sort((a, b) => a.localeCompare(b));
   }
+  getAllValuesForProperty(propKey) {
+    const cleanKey = propKey.toLowerCase().trim();
+    if (!cleanKey || cleanKey.includes("tag")) {
+      return this.getAllTags();
+    }
+    const valuesSet = /* @__PURE__ */ new Set();
+    const files = this.app.vault.getMarkdownFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache?.frontmatter) continue;
+      const matchKey = Object.keys(cache.frontmatter).find((k) => k.toLowerCase().trim() === cleanKey);
+      if (matchKey) {
+        const val = cache.frontmatter[matchKey];
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            if (item !== null && item !== void 0) {
+              const str = String(item).trim();
+              if (str) valuesSet.add(str);
+            }
+          }
+        } else if (typeof val === "string") {
+          val.split(",").forEach((item) => {
+            const str = item.trim();
+            if (str) valuesSet.add(str);
+          });
+        } else if (typeof val === "number" || typeof val === "boolean") {
+          valuesSet.add(String(val));
+        }
+      }
+    }
+    if (valuesSet.size === 0) {
+      return this.getAllTags();
+    }
+    return Array.from(valuesSet).sort((a, b) => a.localeCompare(b));
+  }
   getSuggestions(query) {
     const propKey = (this.getPropertyKey ? this.getPropertyKey() : "").toLowerCase().trim();
-    const isTagProperty = propKey.includes("tag");
+    const isTagProperty = !propKey || propKey.includes("tag");
     const parts = query.split(",");
     const activeToken = parts[parts.length - 1].trim();
     const cleanQuery = activeToken.replace(/^#/, "").toLowerCase();
-    if (!isTagProperty && !activeToken.startsWith("#") && !cleanQuery) {
-      return [];
-    }
-    const allTags = this.getAllTags();
+    const allValues = isTagProperty ? this.getAllTags() : this.getAllValuesForProperty(propKey);
     if (!cleanQuery) {
-      return allTags.slice(0, 50);
+      return allValues.slice(0, 50);
     }
-    return allTags.filter((t) => t.toLowerCase().includes(cleanQuery)).slice(0, 50);
+    return allValues.filter((v) => v.toLowerCase().includes(cleanQuery)).slice(0, 50);
   }
-  renderSuggestion(tag, el) {
+  renderSuggestion(item, el) {
+    const propKey = (this.getPropertyKey ? this.getPropertyKey() : "").toLowerCase().trim();
+    const isTag = !propKey || propKey.includes("tag");
     el.addClass("property-painter-suggest-item");
     const iconSpan = el.createSpan({ cls: "property-painter-suggest-icon" });
-    (0, import_obsidian5.setIcon)(iconSpan, "hash");
-    el.createSpan({ cls: "property-painter-suggest-text", text: tag });
+    (0, import_obsidian5.setIcon)(iconSpan, isTag ? "hash" : "tag");
+    el.createSpan({ cls: "property-painter-suggest-text", text: item });
   }
-  selectSuggestion(tag) {
+  selectSuggestion(item) {
     const parts = this.inputEl.value.split(",");
     const lastPart = parts[parts.length - 1].trim();
     const hadHash = lastPart.startsWith("#");
-    const formatted = hadHash ? `#${tag}` : tag;
+    const formatted = hadHash ? `#${item}` : item;
     if (parts.length > 1) {
       parts[parts.length - 1] = ` ${formatted}`;
-      this.setValue(parts.join(",").trim());
+      this.setValue(parts.join(","));
     } else {
       this.setValue(formatted);
     }
@@ -1618,50 +1710,62 @@ var PropertyPainterSettingTab = class extends import_obsidian6.PluginSettingTab 
         titleRow.createSpan({ cls: "rule-name", text: rule.name || defaultName });
         const effColor = getAdaptiveTextColor(rule.textColor, this.plugin.settings.autoThemeColors);
         const effBg = getAdaptiveBackgroundColor(rule.backgroundColor, rule.textColor, this.plugin.settings.autoThemeColors);
-        const badge = titleRow.createSpan({ cls: "rule-preview-pill" });
-        badge.empty();
-        if (rule.prefixIcon && rule.prefixIcon.trim()) {
-          const iconSpan = badge.createSpan({ cls: "property-painter-prefix-icon" });
-          let iconName = rule.prefixIcon.trim();
-          if (iconName.toLowerCase().startsWith("lucide-")) {
-            iconName = iconName.slice(7);
-          }
-          (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
-          if (!iconSpan.querySelector("svg")) {
-            (0, import_obsidian6.setIcon)(iconSpan, iconName);
-          }
-          if (!iconSpan.querySelector("svg")) {
-            iconSpan.textContent = rule.prefixIcon.trim();
-          }
-        }
-        let pillText = rule.value;
+        const pillContainer = titleRow.createDiv({ cls: "rule-preview-pills-container" });
+        const rawCardVals = (rule.value || "").split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+        let cardDisplayVals = [];
         if (rule.operator === "empty") {
-          pillText = pillText || "(empty)";
+          cardDisplayVals = ["(empty)"];
         } else if (rule.operator === "filled") {
-          pillText = pillText || "(filled)";
+          cardDisplayVals = ["(filled)"];
+        } else if (rawCardVals.length > 0) {
+          cardDisplayVals = rawCardVals;
         } else {
-          pillText = pillText || rule.property || "Preview";
+          cardDisplayVals = [rule.property || "Preview"];
         }
-        badge.createSpan({ text: pillText });
-        badge.style.setProperty("--pp-pill-color", effColor, "important");
-        badge.style.setProperty("--pp-rule-color", effColor, "important");
-        badge.style.setProperty("color", effColor, "important");
-        badge.style.setProperty("-webkit-text-fill-color", effColor, "important");
-        badge.style.setProperty("font-weight", rule.propertyBold ? "bold" : "normal", "important");
-        badge.style.setProperty("font-style", rule.propertyItalic ? "italic" : "normal", "important");
-        badge.style.setProperty("text-decoration", rule.propertyStrike ? "line-through" : "none", "important");
-        if (rule.styleMode === "text-only") {
-          badge.classList.add("property-painter-text-only");
-          badge.style.setProperty("--pp-pill-border", "transparent", "important");
-          badge.style.setProperty("--pp-pill-bg", "transparent", "important");
-          badge.style.setProperty("border", "1px solid transparent", "important");
-          badge.style.setProperty("background-color", "transparent", "important");
-        } else {
-          badge.classList.remove("property-painter-text-only");
-          badge.style.setProperty("--pp-pill-border", effColor, "important");
-          badge.style.setProperty("--pp-pill-bg", effBg, "important");
-          badge.style.setProperty("border", `1px solid ${effColor}`, "important");
-          badge.style.setProperty("background-color", effBg, "important");
+        const maxPills = 3;
+        const visibleVals = cardDisplayVals.slice(0, maxPills);
+        const extraCount = cardDisplayVals.length - maxPills;
+        visibleVals.forEach((pillText) => {
+          const badge = pillContainer.createSpan({ cls: "rule-preview-pill" });
+          if (rule.prefixIcon && rule.prefixIcon.trim()) {
+            const iconSpan = badge.createSpan({ cls: "property-painter-prefix-icon" });
+            let iconName = rule.prefixIcon.trim();
+            if (iconName.toLowerCase().startsWith("lucide-")) {
+              iconName = iconName.slice(7);
+            }
+            (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
+            if (!iconSpan.querySelector("svg")) {
+              (0, import_obsidian6.setIcon)(iconSpan, iconName);
+            }
+            if (!iconSpan.querySelector("svg")) {
+              iconSpan.textContent = rule.prefixIcon.trim();
+            }
+          }
+          badge.createSpan({ text: pillText });
+          badge.style.setProperty("--pp-pill-color", effColor, "important");
+          badge.style.setProperty("--pp-rule-color", effColor, "important");
+          badge.style.setProperty("color", effColor, "important");
+          badge.style.setProperty("-webkit-text-fill-color", effColor, "important");
+          badge.style.setProperty("font-weight", rule.propertyBold ? "bold" : "normal", "important");
+          badge.style.setProperty("font-style", rule.propertyItalic ? "italic" : "normal", "important");
+          badge.style.setProperty("text-decoration", rule.propertyStrike ? "line-through" : "none", "important");
+          if (rule.styleMode === "text-only") {
+            badge.classList.add("property-painter-text-only");
+            badge.style.setProperty("--pp-pill-border", "transparent", "important");
+            badge.style.setProperty("--pp-pill-bg", "transparent", "important");
+            badge.style.setProperty("border", "1px solid transparent", "important");
+            badge.style.setProperty("background-color", "transparent", "important");
+          } else {
+            badge.classList.remove("property-painter-text-only");
+            badge.style.setProperty("--pp-pill-border", effColor, "important");
+            badge.style.setProperty("--pp-pill-bg", effBg, "important");
+            badge.style.setProperty("border", `1px solid ${effColor}`, "important");
+            badge.style.setProperty("background-color", effBg, "important");
+          }
+        });
+        if (extraCount > 0) {
+          const extraBadge = pillContainer.createSpan({ cls: "rule-extra-pills-count" });
+          extraBadge.setText(`+${extraCount} more`);
         }
         const conditionRow = details.createDiv({ cls: "rule-condition-row" });
         conditionRow.createSpan({ text: `When ` });
@@ -1670,6 +1774,12 @@ var PropertyPainterSettingTab = class extends import_obsidian6.PluginSettingTab 
           conditionRow.createSpan({ text: " is empty" });
         } else if (rule.operator === "filled") {
           conditionRow.createSpan({ text: " is filled" });
+        } else if (rawCardVals.length > 1) {
+          conditionRow.createSpan({ text: ` ${rule.operator} any of: ` });
+          rawCardVals.forEach((val, i) => {
+            if (i > 0) conditionRow.createSpan({ text: ", " });
+            conditionRow.createEl("code", { text: `"${val}"` });
+          });
         } else {
           conditionRow.createSpan({ text: ` ${rule.operator} ` });
           conditionRow.createEl("code", { text: `"${rule.value}"` });
@@ -1718,6 +1828,23 @@ var PropertyPainterSettingTab = class extends import_obsidian6.PluginSettingTab 
           (0, import_obsidian6.setIcon)(tExp, "folder-tree");
         }
         const cardRight = card.createDiv({ cls: "rule-card-actions" });
+        const duplicateBtn = cardRight.createEl("button", {
+          cls: "rule-action-btn rule-duplicate-btn",
+          attr: { type: "button", "aria-label": "Duplicate rule" }
+        });
+        (0, import_obsidian6.setIcon)(duplicateBtn, "copy");
+        duplicateBtn.addEventListener("click", async () => {
+          const duplicatedRule = {
+            ...JSON.parse(JSON.stringify(rule)),
+            id: "rule-" + Date.now(),
+            name: rule.name ? `${rule.name} (Copy)` : `${rule.property}: ${rule.value} (Copy)`
+          };
+          this.plugin.settings.rules.splice(index + 1, 0, duplicatedRule);
+          await this.plugin.saveSettings();
+          this.plugin.refreshAllViews();
+          this.display();
+          new import_obsidian6.Notice(`Rule "${duplicatedRule.name}" duplicated`);
+        });
         const editBtn = cardRight.createEl("button", {
           cls: "rule-action-btn rule-edit-btn",
           attr: { type: "button", "aria-label": "Edit rule" }
@@ -1896,7 +2023,7 @@ var PropertyPainterSettingTab = class extends import_obsidian6.PluginSettingTab 
     });
   }
 };
-var RuleEditorModal = class extends import_obsidian6.Modal {
+var RuleEditorModal = class _RuleEditorModal extends import_obsidian6.Modal {
   constructor(app, plugin, rule, isNew, onSaveCallback, ruleIndex = -1) {
     super(app);
     this.plugin = plugin;
@@ -1946,11 +2073,41 @@ var RuleEditorModal = class extends import_obsidian6.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.addClass("property-painter-rule-editor");
-    contentEl.createEl("h2", { text: this.isNew ? "Create Color Rule" : "Edit Color Rule" });
+    const headerRow = contentEl.createDiv({ cls: "rule-editor-header" });
+    headerRow.createEl("h2", { text: this.isNew ? "Create Color Rule" : "Edit Color Rule" });
+    if (!this.isNew) {
+      const dupBtn = headerRow.createEl("button", {
+        cls: "rule-editor-duplicate-btn",
+        attr: { type: "button" }
+      });
+      (0, import_obsidian6.setIcon)(dupBtn.createSpan({ cls: "rule-editor-btn-icon" }), "copy");
+      dupBtn.createSpan({ text: "Duplicate Rule" });
+      dupBtn.addEventListener("click", async () => {
+        const duplicatedRule = {
+          ...JSON.parse(JSON.stringify(this.rule)),
+          id: "rule-" + Date.now(),
+          name: this.rule.name ? `${this.rule.name} (Copy)` : `${this.rule.property}: ${this.rule.value} (Copy)`
+        };
+        const insertIndex = this.ruleIndex >= 0 ? this.ruleIndex + 1 : this.plugin.settings.rules.length;
+        this.plugin.settings.rules.splice(insertIndex, 0, duplicatedRule);
+        await this.plugin.saveSettings();
+        this.plugin.refreshAllViews();
+        new import_obsidian6.Notice(`Rule "${duplicatedRule.name}" duplicated`);
+        this.close();
+        new _RuleEditorModal(
+          this.app,
+          this.plugin,
+          duplicatedRule,
+          false,
+          this.onSaveCallback,
+          insertIndex
+        ).open();
+      });
+    }
     const previewWrapper = contentEl.createDiv({ cls: "rule-editor-preview-wrapper" });
     const propPreviewBox = previewWrapper.createDiv({ cls: "rule-preview-box" });
     propPreviewBox.createSpan({ cls: "rule-preview-label", text: "Note Property: " });
-    const previewPill = propPreviewBox.createSpan({ cls: "rule-preview-pill" });
+    const previewPillContainer = propPreviewBox.createDiv({ cls: "rule-preview-pills-container" });
     const expPreviewBox = previewWrapper.createDiv({ cls: "rule-preview-box" });
     expPreviewBox.createSpan({ cls: "rule-preview-label", text: "File Explorer: " });
     const expPreviewDot = expPreviewBox.createSpan({ cls: "property-painter-dot" });
@@ -1959,57 +2116,64 @@ var RuleEditorModal = class extends import_obsidian6.Modal {
       const isBadge = (this.rule.styleMode || "badge") === "badge";
       const effTextColor = getAdaptiveTextColor(this.rule.textColor, this.plugin.settings.autoThemeColors);
       const effBgColor = getAdaptiveBackgroundColor(this.rule.backgroundColor, this.rule.textColor, this.plugin.settings.autoThemeColors);
-      previewPill.empty();
-      if (this.rule.prefixIcon && this.rule.prefixIcon.trim()) {
-        const iconSpan = previewPill.createSpan({ cls: "property-painter-prefix-icon" });
-        let iconName = this.rule.prefixIcon.trim();
-        if (iconName.toLowerCase().startsWith("lucide-")) {
-          iconName = iconName.slice(7);
-        }
-        (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
-        if (!iconSpan.querySelector("svg")) {
-          (0, import_obsidian6.setIcon)(iconSpan, iconName);
-        }
-        if (!iconSpan.querySelector("svg")) {
-          iconSpan.textContent = this.rule.prefixIcon.trim();
-        }
-      }
-      let pillDisplayText = this.rule.value;
+      previewPillContainer.empty();
+      const rawVals = (this.rule.value || "").split(",").map((v) => v.trim()).filter((v) => v.length > 0);
+      let displayVals = [];
       if (this.rule.operator === "empty") {
-        pillDisplayText = pillDisplayText || "(empty)";
+        displayVals = ["(empty)"];
       } else if (this.rule.operator === "filled") {
-        pillDisplayText = pillDisplayText || "(filled)";
+        displayVals = ["(filled)"];
+      } else if (rawVals.length > 0) {
+        displayVals = rawVals;
       } else {
-        pillDisplayText = pillDisplayText || this.rule.property || "Preview";
+        displayVals = [this.rule.property || "Preview"];
       }
-      previewPill.createSpan({ text: pillDisplayText });
-      previewPill.style.setProperty("--pp-pill-color", effTextColor, "important");
-      previewPill.style.setProperty("--pp-rule-color", effTextColor, "important");
-      previewPill.style.setProperty("color", effTextColor, "important");
-      previewPill.style.setProperty("-webkit-text-fill-color", effTextColor, "important");
-      previewPill.style.fontWeight = this.rule.propertyBold ? "bold" : "normal";
-      previewPill.style.fontStyle = this.rule.propertyItalic ? "italic" : "normal";
-      previewPill.style.textDecoration = this.rule.propertyStrike ? "line-through" : "none";
-      if (isBadge) {
-        previewPill.classList.remove("property-painter-text-only");
-        previewPill.style.setProperty("--pp-pill-border", effTextColor, "important");
-        previewPill.style.setProperty("--pp-pill-bg", effBgColor, "important");
-        previewPill.style.setProperty("border", `1px solid ${effTextColor}`, "important");
-        previewPill.style.setProperty("background-color", effBgColor, "important");
-      } else {
-        previewPill.classList.add("property-painter-text-only");
-        previewPill.style.setProperty("--pp-pill-border", "transparent", "important");
-        previewPill.style.setProperty("--pp-pill-bg", "transparent", "important");
-        previewPill.style.setProperty("border", "1px solid transparent", "important");
-        previewPill.style.setProperty("background-color", "transparent", "important");
-      }
+      displayVals.forEach((valText) => {
+        const pill = previewPillContainer.createSpan({ cls: "rule-preview-pill" });
+        if (this.rule.prefixIcon && this.rule.prefixIcon.trim()) {
+          const iconSpan = pill.createSpan({ cls: "property-painter-prefix-icon" });
+          let iconName = this.rule.prefixIcon.trim();
+          if (iconName.toLowerCase().startsWith("lucide-")) {
+            iconName = iconName.slice(7);
+          }
+          (0, import_obsidian6.setIcon)(iconSpan, iconName.toLowerCase());
+          if (!iconSpan.querySelector("svg")) {
+            (0, import_obsidian6.setIcon)(iconSpan, iconName);
+          }
+          if (!iconSpan.querySelector("svg")) {
+            iconSpan.textContent = this.rule.prefixIcon.trim();
+          }
+        }
+        pill.createSpan({ text: valText });
+        pill.style.setProperty("--pp-pill-color", effTextColor, "important");
+        pill.style.setProperty("--pp-rule-color", effTextColor, "important");
+        pill.style.setProperty("color", effTextColor, "important");
+        pill.style.setProperty("-webkit-text-fill-color", effTextColor, "important");
+        pill.style.fontWeight = this.rule.propertyBold ? "bold" : "normal";
+        pill.style.fontStyle = this.rule.propertyItalic ? "italic" : "normal";
+        pill.style.textDecoration = this.rule.propertyStrike ? "line-through" : "none";
+        if (isBadge) {
+          pill.classList.remove("property-painter-text-only");
+          pill.style.setProperty("--pp-pill-border", effTextColor, "important");
+          pill.style.setProperty("--pp-pill-bg", effBgColor, "important");
+          pill.style.setProperty("border", `1px solid ${effTextColor}`, "important");
+          pill.style.setProperty("background-color", effBgColor, "important");
+        } else {
+          pill.classList.add("property-painter-text-only");
+          pill.style.setProperty("--pp-pill-border", "transparent", "important");
+          pill.style.setProperty("--pp-pill-bg", "transparent", "important");
+          pill.style.setProperty("border", "1px solid transparent", "important");
+          pill.style.setProperty("background-color", "transparent", "important");
+        }
+      });
       let sampleTitle = "example-note.md";
       if (this.rule.operator === "empty") {
         sampleTitle = `${this.rule.property || "property"}-empty.md`;
       } else if (this.rule.operator === "filled") {
         sampleTitle = `${this.rule.property || "property"}-filled.md`;
       } else if (this.rule.value) {
-        sampleTitle = `${this.rule.value}-note.md`;
+        const firstVal = this.rule.value.split(",")[0].trim();
+        sampleTitle = `${firstVal || "example"}-note.md`;
       }
       expPreviewTitle.setText(sampleTitle);
       if (this.rule.applyToFileExplorer) {
@@ -2088,8 +2252,8 @@ var RuleEditorModal = class extends import_obsidian6.Modal {
         await this.applyDirectChange();
       });
     });
-    targetValueSetting = new import_obsidian6.Setting(contentEl).setName("Target Value").setDesc("Value to match against (e.g., to-read, read, or tags from your vault)").addText((text) => {
-      text.setPlaceholder("to-read");
+    targetValueSetting = new import_obsidian6.Setting(contentEl).setName("Target Value").setDesc("Value or comma-separated values to match against (e.g., completed, published)").addText((text) => {
+      text.setPlaceholder("completed, published");
       text.setValue(this.rule.value || "");
       new TagSuggest(
         this.app,
@@ -2321,7 +2485,7 @@ var PropertyPainterPlugin = class extends import_obsidian7.Plugin {
     this.viewObserver = null;
     this.debouncedRefreshActive = (0, import_obsidian7.debounce)(() => {
       this.refreshActiveMarkdownView();
-    }, 40, true);
+    }, 150);
   }
   async onload() {
     await this.loadSettings();
@@ -2474,12 +2638,7 @@ var PropertyPainterPlugin = class extends import_obsidian7.Plugin {
       const self = this;
       metaEditor.synchronize = function(...args) {
         const res = origSync.apply(this, args);
-        setTimeout(() => {
-          self.updateMarkdownView(view);
-        }, 10);
-        setTimeout(() => {
-          self.updateMarkdownView(view);
-        }, 100);
+        self.debouncedRefreshActive();
         return res;
       };
     }
@@ -2512,7 +2671,11 @@ var PropertyPainterPlugin = class extends import_obsidian7.Plugin {
     const handleEvent = (e) => {
       const target = e.target;
       if (target && target.closest(".metadata-container")) {
-        this.debouncedRefreshActive();
+        if (e.type === "focusout" || e.type === "change") {
+          this.refreshActiveMarkdownView();
+        } else {
+          this.debouncedRefreshActive();
+        }
       }
     };
     activeView.contentEl.addEventListener("input", handleEvent);

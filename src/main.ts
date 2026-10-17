@@ -18,7 +18,7 @@ export default class PropertyPainterPlugin extends Plugin {
     super(app, manifest);
     this.debouncedRefreshActive = debounce(() => {
       this.refreshActiveMarkdownView();
-    }, 40, true);
+    }, 150);
   }
 
   async onload(): Promise<void> {
@@ -200,12 +200,7 @@ export default class PropertyPainterPlugin extends Plugin {
       const self = this;
       metaEditor.synchronize = function(...args: any[]) {
         const res = origSync.apply(this, args);
-        setTimeout(() => {
-          self.updateMarkdownView(view);
-        }, 10);
-        setTimeout(() => {
-          self.updateMarkdownView(view);
-        }, 100);
+        self.debouncedRefreshActive();
         return res;
       };
     }
@@ -249,7 +244,11 @@ export default class PropertyPainterPlugin extends Plugin {
     const handleEvent = (e: Event) => {
       const target = e.target as HTMLElement;
       if (target && target.closest('.metadata-container')) {
-        this.debouncedRefreshActive();
+        if (e.type === 'focusout' || e.type === 'change') {
+          this.refreshActiveMarkdownView();
+        } else {
+          this.debouncedRefreshActive();
+        }
       }
     };
 

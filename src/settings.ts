@@ -2,6 +2,7 @@ import {
   App,
   ColorComponent,
   Modal,
+  Notice,
   PluginSettingTab,
   Setting,
   TFolder,
@@ -344,51 +345,70 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
         const effColor = getAdaptiveTextColor(rule.textColor, this.plugin.settings.autoThemeColors);
         const effBg = getAdaptiveBackgroundColor(rule.backgroundColor, rule.textColor, this.plugin.settings.autoThemeColors);
 
-        const badge = titleRow.createSpan({ cls: 'rule-preview-pill' });
-        badge.empty();
-        if (rule.prefixIcon && rule.prefixIcon.trim()) {
-          const iconSpan = badge.createSpan({ cls: 'property-painter-prefix-icon' });
-          let iconName = rule.prefixIcon.trim();
-          if (iconName.toLowerCase().startsWith('lucide-')) {
-            iconName = iconName.slice(7);
-          }
-          setIcon(iconSpan, iconName.toLowerCase());
-          if (!iconSpan.querySelector('svg')) {
-            setIcon(iconSpan, iconName);
-          }
-          if (!iconSpan.querySelector('svg')) {
-            iconSpan.textContent = rule.prefixIcon.trim();
-          }
-        }
-        let pillText = rule.value;
-        if (rule.operator === 'empty') {
-          pillText = pillText || '(empty)';
-        } else if (rule.operator === 'filled') {
-          pillText = pillText || '(filled)';
-        } else {
-          pillText = pillText || rule.property || 'Preview';
-        }
-        badge.createSpan({ text: pillText });
-        badge.style.setProperty('--pp-pill-color', effColor, 'important');
-        badge.style.setProperty('--pp-rule-color', effColor, 'important');
-        badge.style.setProperty('color', effColor, 'important');
-        badge.style.setProperty('-webkit-text-fill-color', effColor, 'important');
-        badge.style.setProperty('font-weight', rule.propertyBold ? 'bold' : 'normal', 'important');
-        badge.style.setProperty('font-style', rule.propertyItalic ? 'italic' : 'normal', 'important');
-        badge.style.setProperty('text-decoration', rule.propertyStrike ? 'line-through' : 'none', 'important');
+        const pillContainer = titleRow.createDiv({ cls: 'rule-preview-pills-container' });
+        const rawCardVals = (rule.value || '')
+          .split(',')
+          .map(v => v.trim())
+          .filter(v => v.length > 0);
 
-        if (rule.styleMode === 'text-only') {
-          badge.classList.add('property-painter-text-only');
-          badge.style.setProperty('--pp-pill-border', 'transparent', 'important');
-          badge.style.setProperty('--pp-pill-bg', 'transparent', 'important');
-          badge.style.setProperty('border', '1px solid transparent', 'important');
-          badge.style.setProperty('background-color', 'transparent', 'important');
+        let cardDisplayVals: string[] = [];
+        if (rule.operator === 'empty') {
+          cardDisplayVals = ['(empty)'];
+        } else if (rule.operator === 'filled') {
+          cardDisplayVals = ['(filled)'];
+        } else if (rawCardVals.length > 0) {
+          cardDisplayVals = rawCardVals;
         } else {
-          badge.classList.remove('property-painter-text-only');
-          badge.style.setProperty('--pp-pill-border', effColor, 'important');
-          badge.style.setProperty('--pp-pill-bg', effBg, 'important');
-          badge.style.setProperty('border', `1px solid ${effColor}`, 'important');
-          badge.style.setProperty('background-color', effBg, 'important');
+          cardDisplayVals = [rule.property || 'Preview'];
+        }
+
+        const maxPills = 3;
+        const visibleVals = cardDisplayVals.slice(0, maxPills);
+        const extraCount = cardDisplayVals.length - maxPills;
+
+        visibleVals.forEach(pillText => {
+          const badge = pillContainer.createSpan({ cls: 'rule-preview-pill' });
+          if (rule.prefixIcon && rule.prefixIcon.trim()) {
+            const iconSpan = badge.createSpan({ cls: 'property-painter-prefix-icon' });
+            let iconName = rule.prefixIcon.trim();
+            if (iconName.toLowerCase().startsWith('lucide-')) {
+              iconName = iconName.slice(7);
+            }
+            setIcon(iconSpan, iconName.toLowerCase());
+            if (!iconSpan.querySelector('svg')) {
+              setIcon(iconSpan, iconName);
+            }
+            if (!iconSpan.querySelector('svg')) {
+              iconSpan.textContent = rule.prefixIcon.trim();
+            }
+          }
+          badge.createSpan({ text: pillText });
+          badge.style.setProperty('--pp-pill-color', effColor, 'important');
+          badge.style.setProperty('--pp-rule-color', effColor, 'important');
+          badge.style.setProperty('color', effColor, 'important');
+          badge.style.setProperty('-webkit-text-fill-color', effColor, 'important');
+          badge.style.setProperty('font-weight', rule.propertyBold ? 'bold' : 'normal', 'important');
+          badge.style.setProperty('font-style', rule.propertyItalic ? 'italic' : 'normal', 'important');
+          badge.style.setProperty('text-decoration', rule.propertyStrike ? 'line-through' : 'none', 'important');
+
+          if (rule.styleMode === 'text-only') {
+            badge.classList.add('property-painter-text-only');
+            badge.style.setProperty('--pp-pill-border', 'transparent', 'important');
+            badge.style.setProperty('--pp-pill-bg', 'transparent', 'important');
+            badge.style.setProperty('border', '1px solid transparent', 'important');
+            badge.style.setProperty('background-color', 'transparent', 'important');
+          } else {
+            badge.classList.remove('property-painter-text-only');
+            badge.style.setProperty('--pp-pill-border', effColor, 'important');
+            badge.style.setProperty('--pp-pill-bg', effBg, 'important');
+            badge.style.setProperty('border', `1px solid ${effColor}`, 'important');
+            badge.style.setProperty('background-color', effBg, 'important');
+          }
+        });
+
+        if (extraCount > 0) {
+          const extraBadge = pillContainer.createSpan({ cls: 'rule-extra-pills-count' });
+          extraBadge.setText(`+${extraCount} more`);
         }
 
         const conditionRow = details.createDiv({ cls: 'rule-condition-row' });
@@ -398,6 +418,12 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
           conditionRow.createSpan({ text: ' is empty' });
         } else if (rule.operator === 'filled') {
           conditionRow.createSpan({ text: ' is filled' });
+        } else if (rawCardVals.length > 1) {
+          conditionRow.createSpan({ text: ` ${rule.operator} any of: ` });
+          rawCardVals.forEach((val, i) => {
+            if (i > 0) conditionRow.createSpan({ text: ', ' });
+            conditionRow.createEl('code', { text: `"${val}"` });
+          });
         } else {
           conditionRow.createSpan({ text: ` ${rule.operator} ` });
           conditionRow.createEl('code', { text: `"${rule.value}"` });
@@ -453,6 +479,25 @@ export class PropertyPainterSettingTab extends PluginSettingTab {
 
         // Actions
         const cardRight = card.createDiv({ cls: 'rule-card-actions' });
+
+        const duplicateBtn = cardRight.createEl('button', {
+          cls: 'rule-action-btn rule-duplicate-btn',
+          attr: { type: 'button', 'aria-label': 'Duplicate rule' }
+        });
+        setIcon(duplicateBtn, 'copy');
+        duplicateBtn.addEventListener('click', async () => {
+          const duplicatedRule: PropertyColorRule = {
+            ...JSON.parse(JSON.stringify(rule)),
+            id: 'rule-' + Date.now(),
+            name: rule.name ? `${rule.name} (Copy)` : `${rule.property}: ${rule.value} (Copy)`
+          };
+          this.plugin.settings.rules.splice(index + 1, 0, duplicatedRule);
+          await this.plugin.saveSettings();
+          this.plugin.refreshAllViews();
+          this.display();
+          new Notice(`Rule "${duplicatedRule.name}" duplicated`);
+        });
+
         const editBtn = cardRight.createEl('button', {
           cls: 'rule-action-btn rule-edit-btn',
           attr: { type: 'button', 'aria-label': 'Edit rule' }
@@ -759,7 +804,37 @@ export class RuleEditorModal extends Modal {
     contentEl.empty();
     contentEl.addClass('property-painter-rule-editor');
 
-    contentEl.createEl('h2', { text: this.isNew ? 'Create Color Rule' : 'Edit Color Rule' });
+    const headerRow = contentEl.createDiv({ cls: 'rule-editor-header' });
+    headerRow.createEl('h2', { text: this.isNew ? 'Create Color Rule' : 'Edit Color Rule' });
+    if (!this.isNew) {
+      const dupBtn = headerRow.createEl('button', {
+        cls: 'rule-editor-duplicate-btn',
+        attr: { type: 'button' }
+      });
+      setIcon(dupBtn.createSpan({ cls: 'rule-editor-btn-icon' }), 'copy');
+      dupBtn.createSpan({ text: 'Duplicate Rule' });
+      dupBtn.addEventListener('click', async () => {
+        const duplicatedRule: PropertyColorRule = {
+          ...JSON.parse(JSON.stringify(this.rule)),
+          id: 'rule-' + Date.now(),
+          name: this.rule.name ? `${this.rule.name} (Copy)` : `${this.rule.property}: ${this.rule.value} (Copy)`
+        };
+        const insertIndex = this.ruleIndex >= 0 ? this.ruleIndex + 1 : this.plugin.settings.rules.length;
+        this.plugin.settings.rules.splice(insertIndex, 0, duplicatedRule);
+        await this.plugin.saveSettings();
+        this.plugin.refreshAllViews();
+        new Notice(`Rule "${duplicatedRule.name}" duplicated`);
+        this.close();
+        new RuleEditorModal(
+          this.app,
+          this.plugin,
+          duplicatedRule,
+          false,
+          this.onSaveCallback,
+          insertIndex
+        ).open();
+      });
+    }
 
     // Live preview cards
     const previewWrapper = contentEl.createDiv({ cls: 'rule-editor-preview-wrapper' });
@@ -767,7 +842,7 @@ export class RuleEditorModal extends Modal {
     // Property preview
     const propPreviewBox = previewWrapper.createDiv({ cls: 'rule-preview-box' });
     propPreviewBox.createSpan({ cls: 'rule-preview-label', text: 'Note Property: ' });
-    const previewPill = propPreviewBox.createSpan({ cls: 'rule-preview-pill' });
+    const previewPillContainer = propPreviewBox.createDiv({ cls: 'rule-preview-pills-container' });
 
     // Explorer preview
     const expPreviewBox = previewWrapper.createDiv({ cls: 'rule-preview-box' });
@@ -780,54 +855,64 @@ export class RuleEditorModal extends Modal {
       const effTextColor = getAdaptiveTextColor(this.rule.textColor, this.plugin.settings.autoThemeColors);
       const effBgColor = getAdaptiveBackgroundColor(this.rule.backgroundColor, this.rule.textColor, this.plugin.settings.autoThemeColors);
 
-      // Property pill
-      previewPill.empty();
-      if (this.rule.prefixIcon && this.rule.prefixIcon.trim()) {
-        const iconSpan = previewPill.createSpan({ cls: 'property-painter-prefix-icon' });
-        let iconName = this.rule.prefixIcon.trim();
-        if (iconName.toLowerCase().startsWith('lucide-')) {
-          iconName = iconName.slice(7);
-        }
-        setIcon(iconSpan, iconName.toLowerCase());
-        if (!iconSpan.querySelector('svg')) {
-          setIcon(iconSpan, iconName);
-        }
-        if (!iconSpan.querySelector('svg')) {
-          iconSpan.textContent = this.rule.prefixIcon.trim();
-        }
-      }
+      // Property pills
+      previewPillContainer.empty();
+      const rawVals = (this.rule.value || '')
+        .split(',')
+        .map(v => v.trim())
+        .filter(v => v.length > 0);
 
-      let pillDisplayText = this.rule.value;
+      let displayVals: string[] = [];
       if (this.rule.operator === 'empty') {
-        pillDisplayText = pillDisplayText || '(empty)';
+        displayVals = ['(empty)'];
       } else if (this.rule.operator === 'filled') {
-        pillDisplayText = pillDisplayText || '(filled)';
+        displayVals = ['(filled)'];
+      } else if (rawVals.length > 0) {
+        displayVals = rawVals;
       } else {
-        pillDisplayText = pillDisplayText || this.rule.property || 'Preview';
+        displayVals = [this.rule.property || 'Preview'];
       }
 
-      previewPill.createSpan({ text: pillDisplayText });
-      previewPill.style.setProperty('--pp-pill-color', effTextColor, 'important');
-      previewPill.style.setProperty('--pp-rule-color', effTextColor, 'important');
-      previewPill.style.setProperty('color', effTextColor, 'important');
-      previewPill.style.setProperty('-webkit-text-fill-color', effTextColor, 'important');
-      previewPill.style.fontWeight = this.rule.propertyBold ? 'bold' : 'normal';
-      previewPill.style.fontStyle = this.rule.propertyItalic ? 'italic' : 'normal';
-      previewPill.style.textDecoration = this.rule.propertyStrike ? 'line-through' : 'none';
+      displayVals.forEach(valText => {
+        const pill = previewPillContainer.createSpan({ cls: 'rule-preview-pill' });
+        if (this.rule.prefixIcon && this.rule.prefixIcon.trim()) {
+          const iconSpan = pill.createSpan({ cls: 'property-painter-prefix-icon' });
+          let iconName = this.rule.prefixIcon.trim();
+          if (iconName.toLowerCase().startsWith('lucide-')) {
+            iconName = iconName.slice(7);
+          }
+          setIcon(iconSpan, iconName.toLowerCase());
+          if (!iconSpan.querySelector('svg')) {
+            setIcon(iconSpan, iconName);
+          }
+          if (!iconSpan.querySelector('svg')) {
+            iconSpan.textContent = this.rule.prefixIcon.trim();
+          }
+        }
 
-      if (isBadge) {
-        previewPill.classList.remove('property-painter-text-only');
-        previewPill.style.setProperty('--pp-pill-border', effTextColor, 'important');
-        previewPill.style.setProperty('--pp-pill-bg', effBgColor, 'important');
-        previewPill.style.setProperty('border', `1px solid ${effTextColor}`, 'important');
-        previewPill.style.setProperty('background-color', effBgColor, 'important');
-      } else {
-        previewPill.classList.add('property-painter-text-only');
-        previewPill.style.setProperty('--pp-pill-border', 'transparent', 'important');
-        previewPill.style.setProperty('--pp-pill-bg', 'transparent', 'important');
-        previewPill.style.setProperty('border', '1px solid transparent', 'important');
-        previewPill.style.setProperty('background-color', 'transparent', 'important');
-      }
+        pill.createSpan({ text: valText });
+        pill.style.setProperty('--pp-pill-color', effTextColor, 'important');
+        pill.style.setProperty('--pp-rule-color', effTextColor, 'important');
+        pill.style.setProperty('color', effTextColor, 'important');
+        pill.style.setProperty('-webkit-text-fill-color', effTextColor, 'important');
+        pill.style.fontWeight = this.rule.propertyBold ? 'bold' : 'normal';
+        pill.style.fontStyle = this.rule.propertyItalic ? 'italic' : 'normal';
+        pill.style.textDecoration = this.rule.propertyStrike ? 'line-through' : 'none';
+
+        if (isBadge) {
+          pill.classList.remove('property-painter-text-only');
+          pill.style.setProperty('--pp-pill-border', effTextColor, 'important');
+          pill.style.setProperty('--pp-pill-bg', effBgColor, 'important');
+          pill.style.setProperty('border', `1px solid ${effTextColor}`, 'important');
+          pill.style.setProperty('background-color', effBgColor, 'important');
+        } else {
+          pill.classList.add('property-painter-text-only');
+          pill.style.setProperty('--pp-pill-border', 'transparent', 'important');
+          pill.style.setProperty('--pp-pill-bg', 'transparent', 'important');
+          pill.style.setProperty('border', '1px solid transparent', 'important');
+          pill.style.setProperty('background-color', 'transparent', 'important');
+        }
+      });
 
       // Explorer Title
       let sampleTitle = 'example-note.md';
@@ -836,7 +921,8 @@ export class RuleEditorModal extends Modal {
       } else if (this.rule.operator === 'filled') {
         sampleTitle = `${this.rule.property || 'property'}-filled.md`;
       } else if (this.rule.value) {
-        sampleTitle = `${this.rule.value}-note.md`;
+        const firstVal = this.rule.value.split(',')[0].trim();
+        sampleTitle = `${firstVal || 'example'}-note.md`;
       }
       expPreviewTitle.setText(sampleTitle);
 
@@ -939,9 +1025,9 @@ export class RuleEditorModal extends Modal {
 
     targetValueSetting = new Setting(contentEl)
       .setName('Target Value')
-      .setDesc('Value to match against (e.g., to-read, read, or tags from your vault)')
+      .setDesc('Value or comma-separated values to match against (e.g., completed, published)')
       .addText(text => {
-        text.setPlaceholder('to-read');
+        text.setPlaceholder('completed, published');
         text.setValue(this.rule.value || '');
         new TagSuggest(
           this.app,

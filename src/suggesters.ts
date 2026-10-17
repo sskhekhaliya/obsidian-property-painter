@@ -148,46 +148,83 @@ export class TagSuggest extends AbstractInputSuggest<string> {
     return Array.from(tagsSet).sort((a, b) => a.localeCompare(b));
   }
 
+  private getAllValuesForProperty(propKey: string): string[] {
+    const cleanKey = propKey.toLowerCase().trim();
+    if (!cleanKey || cleanKey.includes('tag')) {
+      return this.getAllTags();
+    }
+
+    const valuesSet = new Set<string>();
+    const files = this.app.vault.getMarkdownFiles();
+    for (const file of files) {
+      const cache = this.app.metadataCache.getFileCache(file);
+      if (!cache?.frontmatter) continue;
+
+      const matchKey = Object.keys(cache.frontmatter).find(k => k.toLowerCase().trim() === cleanKey);
+      if (matchKey) {
+        const val = cache.frontmatter[matchKey];
+        if (Array.isArray(val)) {
+          for (const item of val) {
+            if (item !== null && item !== undefined) {
+              const str = String(item).trim();
+              if (str) valuesSet.add(str);
+            }
+          }
+        } else if (typeof val === 'string') {
+          val.split(',').forEach(item => {
+            const str = item.trim();
+            if (str) valuesSet.add(str);
+          });
+        } else if (typeof val === 'number' || typeof val === 'boolean') {
+          valuesSet.add(String(val));
+        }
+      }
+    }
+
+    if (valuesSet.size === 0) {
+      return this.getAllTags();
+    }
+
+    return Array.from(valuesSet).sort((a, b) => a.localeCompare(b));
+  }
+
   protected getSuggestions(query: string): string[] {
     const propKey = (this.getPropertyKey ? this.getPropertyKey() : '').toLowerCase().trim();
-    const isTagProperty = propKey.includes('tag');
+    const isTagProperty = !propKey || propKey.includes('tag');
 
     // Extract active token if comma-separated
     const parts = query.split(',');
     const activeToken = parts[parts.length - 1].trim();
     const cleanQuery = activeToken.replace(/^#/, '').toLowerCase();
 
-    // If not a tag property, only suggest if user started typing with '#' or query matches tags
-    if (!isTagProperty && !activeToken.startsWith('#') && !cleanQuery) {
-      return [];
-    }
-
-    const allTags = this.getAllTags();
+    const allValues = isTagProperty ? this.getAllTags() : this.getAllValuesForProperty(propKey);
     if (!cleanQuery) {
-      return allTags.slice(0, 50);
+      return allValues.slice(0, 50);
     }
 
-    return allTags
-      .filter(t => t.toLowerCase().includes(cleanQuery))
+    return allValues
+      .filter(v => v.toLowerCase().includes(cleanQuery))
       .slice(0, 50);
   }
 
-  renderSuggestion(tag: string, el: HTMLElement): void {
+  renderSuggestion(item: string, el: HTMLElement): void {
+    const propKey = (this.getPropertyKey ? this.getPropertyKey() : '').toLowerCase().trim();
+    const isTag = !propKey || propKey.includes('tag');
     el.addClass('property-painter-suggest-item');
     const iconSpan = el.createSpan({ cls: 'property-painter-suggest-icon' });
-    setIcon(iconSpan, 'hash');
-    el.createSpan({ cls: 'property-painter-suggest-text', text: tag });
+    setIcon(iconSpan, isTag ? 'hash' : 'tag');
+    el.createSpan({ cls: 'property-painter-suggest-text', text: item });
   }
 
-  selectSuggestion(tag: string): void {
+  selectSuggestion(item: string): void {
     const parts = this.inputEl.value.split(',');
     const lastPart = parts[parts.length - 1].trim();
     const hadHash = lastPart.startsWith('#');
-    const formatted = hadHash ? `#${tag}` : tag;
+    const formatted = hadHash ? `#${item}` : item;
 
     if (parts.length > 1) {
       parts[parts.length - 1] = ` ${formatted}`;
-      this.setValue(parts.join(',').trim());
+      this.setValue(parts.join(','));
     } else {
       this.setValue(formatted);
     }
